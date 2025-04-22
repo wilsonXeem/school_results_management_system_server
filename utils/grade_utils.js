@@ -3,20 +3,20 @@ const SemesterResult = require("../models/semester_result");
 // Function to calculate grade based on score
 const calculateGrade = (score, type) => {
   if (type === "regular") {
-    if (score >= 70) return 5;
-    else if (score >= 60) return 4;
-    else if (score >= 50) return 3;
+    if (score >= 69.49) return 5;
+    else if (score >= 59.49) return 4;
+    else if (score >= 49.49) return 3;
     else return 0;
   } else if (type === "external") {
-    if (score >= 70) return 5;
-    else if (score >= 60) return 4;
-    else if (score >= 50) return 3;
-    else if (score >= 45) return 2;
-    else if (score >= 40) return 1;
+    if (score >= 69.49) return 5;
+    else if (score >= 59.49) return 4;
+    else if (score >= 49.49) return 3;
+    else if (score >= 44.49) return 2;
+    else if (score >= 39.49) return 1;
     else return 0;
   } else if (type === "ceutics") {
-    if (score >= 70) return 5;
-    else if (score >= 60) return 4;
+    if (score >= 69.49) return 5;
+    else if (score >= 59.49) return 4;
     else return 0;
   } else {
     throw new Error("Invalid grade type provided");

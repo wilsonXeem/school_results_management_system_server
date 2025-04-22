@@ -13,5 +13,6 @@ router.get(
   "/:session/:semester/:course_code",
   class_controller.get_students_by_course
 );
+router.get("/topstudents/:class_id", class_controller.getTopStudents);
 
 module.exports = router;
