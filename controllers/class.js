@@ -541,6 +541,7 @@ module.exports.probation_list = async (req, res) => {
       level: result.student_id.level,
       session_gpa: result.session_gpa || "N/A", // GPA for other levels
       session: result.session,
+      moe: result.student_id.moe,
     }));
 
     res.status(200).json({
@@ -629,6 +630,7 @@ module.exports.error_students = async (req, res) => {
           reg_no: student.reg_no,
           current_level: student.level,
           probation_sessions: probationDetails,
+          moe: student.moe,
         });
       }
     }
