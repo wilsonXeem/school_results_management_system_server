@@ -159,127 +159,123 @@ module.exports.register_students = async (req, res, next) => {
 
 module.exports.register_external = async (req, res, next) => {
   let {
-    reg_no,
+    students, // Array of { reg_no: fullname }
     level,
     course_title,
     course_code,
     unit_load,
     semester,
     session,
-    class_id,
     external,
   } = req.body;
-  semester = Number(semester);
+  console.log(course_title, course_code, unit_load, semester, session);
+
   level = Number(level);
+  semester = Number(semester);
 
   try {
-    // Get session and ensure it exists
     const sessionData = await Session.findOne({ session }).populate("classes");
     if (!sessionData) {
       return res.status(404).json({ message: "Session not found" });
     }
 
-    // Get the correct class within the session
-    const classData = sessionData.classes.find((cls) => cls.level === level);
+    let classData = sessionData.classes.find((cls) => cls.level === level);
     if (!classData) {
-      return res
-        .status(404)
-        .json({ message: "Class not found for this session" });
+      classData = new Class({ level, students: [] });
+      sessionData.classes.push(classData);
+      await sessionData.save();
     }
 
-    // Check if student exists
-    let student = await Student.findOne({ reg_no });
-    if (!student) {
-      return res.status(500).json({ message: "Student not found!" });
-    }
+    const studentIds = new Set(classData.students.map((id) => id.toString()));
+    const studentsData = [];
 
-    // Register student in SemesterResult
-    let semesterResult = await SemesterResult.findOne({
-      student_id: student._id,
-      session,
-      level,
-      semester,
-    });
+    for (const studentObj of students) {
+      const reg_no = Object.keys(studentObj)[0];
+      if (!reg_no) continue;
 
-    if (!semesterResult) {
-      semesterResult = new SemesterResult({
-        student_id: student._id,
-        session,
-        level,
-        semester,
-        courses: [
-          {
+      try {
+        const student = await Student.findOne({ reg_no });
+        if (!student) continue;
+
+        let semesterResult = await SemesterResult.findOne({
+          student_id: student._id,
+          session,
+          semester,
+        });
+
+        if (!semesterResult) {
+          semesterResult = new SemesterResult({
+            student_id: student._id,
+            session,
+            level,
+            semester,
+            courses: [],
+          });
+        }
+
+        const courseExists = semesterResult.courses.some(
+          (c) => c.course_code.toLowerCase() === course_code.toLowerCase()
+        );
+
+        if (!courseExists) {
+          semesterResult.courses.push({
             course_code,
             course_title,
             unit_load,
             corrected_unit_load: unit_load,
             external,
-          },
-        ],
-      });
-      await semesterResult.save();
-    } else {
-      // Add course if not already registered
-      const courseExists = semesterResult.courses.some(
-        (c) => c.course_code === course_code
-      );
-      if (!courseExists) {
-        semesterResult.courses.push({
-          course_code,
-          course_title,
-          unit_load,
-          corrected_unit_load: unit_load,
-          external,
+          });
+          await semesterResult.save();
+        }
+
+        if (!studentIds.has(student._id.toString())) {
+          classData.students.push(student._id);
+          studentIds.add(student._id.toString());
+        }
+
+        studentsData.push({
+          student_id: student._id,
+          fullname: student.fullname,
+          reg_no: student.reg_no,
+          level: student.level,
+          cgpa: student.cgpa,
+          gpa: semesterResult.gpa,
+          semester,
+          session,
+          courses: semesterResult.courses,
         });
-        await semesterResult.save();
+      } catch (err) {
+        console.error(`Error processing reg_no ${reg_no}:`, err);
+        continue;
       }
     }
 
-    // Track external courses only if they don't exist already
+    await classData.save();
+
     if (external) {
       const externalExists = await External.findOne({ session, course_code });
       if (!externalExists) {
-        const externals = new External({
+        const newExternal = new External({
           session,
           course_code,
           course_title,
           unit_load,
           semester,
         });
-        await externals.save();
-        sessionData.externals.push(externals._id);
-        sessionData.save();
+        await newExternal.save();
+        sessionData.externals.push(newExternal._id);
+        await sessionData.save();
       }
     }
 
-    // Fetch the updated list of students and their results
-    const studentResults = await SemesterResult.find({
-      student_id: { $in: classData.students },
-      session,
-      level,
-      semester,
-    }).populate("student_id"); // Populate student details
-
-    const studentsData = studentResults.map((result) => ({
-      student_id: result.student_id._id,
-      fullname: result.student_id.fullname,
-      reg_no: result.student_id.reg_no,
-      level: result.student_id.level,
-      cgpa: result.student_id.cgpa,
-      gpa: result.gpa,
-      semester,
-      session: result.session,
-      courses: result.courses, // Include their courses for the semester
-    }));
-
     res.status(200).json({
-      message: "Students registered successfully",
+      message: "External students registered successfully",
       class: classData,
       students: studentsData,
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Error registering students" });
+    res.status(500).json({ message: "Error registering external students" });
   }
 };
 
@@ -994,7 +990,7 @@ const updateSemesterGPAs = async () => {
   }
 };
 
-// updateSemesterGPAs();
+updateSemesterGPAs();
 
 const calculateSessionGPA = async () => {
   try {
@@ -1045,7 +1041,7 @@ const calculateSessionGPA = async () => {
   }
 };
 
-// calculateSessionGPA();
+calculateSessionGPA();
 
 async function updateAllStudentsCGPA() {
   try {
@@ -1075,4 +1071,4 @@ async function updateAllStudentsCGPA() {
   }
 }
 
-// updateAllStudentsCGPA();
+updateAllStudentsCGPA();
