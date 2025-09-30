@@ -72,11 +72,13 @@ module.exports.get_results_by_session = async (req, res) => {
     const firstExternal =
       results
         .find((r) => r.semester === 1)
-        ?.courses.filter((course) => !(course.course_code in professionals)) || [];
+        ?.courses.filter((course) => !(course.course_code in professionals)) ||
+      [];
     const secondExternal =
       results
         .find((r) => r.semester === 2)
-        ?.courses.filter((course) => !(course.course_code in professionals)) || [];
+        ?.courses.filter((course) => !(course.course_code in professionals)) ||
+      [];
 
     // Calculate session CGPA based on total unit load and grades
     let totalGradePoints = 0;
@@ -299,3 +301,57 @@ module.exports.updateMoe = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+const correctSemesterLevels = async () => {
+  try {
+    const session = "2024-2025";
+    const semester = 1; // First semester
+
+    // Get all semester results for the session and semester
+    const semesterResults = await SemesterResult.find({
+      session,
+      semester,
+    }).populate("student_id");
+
+    for (const result of semesterResults) {
+      if (!result.courses || result.courses.length === 0) continue;
+
+      const counts = {};
+
+      // Count dominant course levels
+      for (const course of result.courses) {
+        const match = course.course_code.match(/(\d+)/); // extract number part
+        if (match) {
+          const firstDigit = match[0][0]; // first digit of numeric part
+          counts[firstDigit] = (counts[firstDigit] || 0) + 1;
+        }
+      }
+
+      // Find dominant digit
+      const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+      if (!dominant) continue;
+
+      const dominantLevel = parseInt(dominant[0]) * 100; // e.g., "4" → 400
+
+      // Update semester result level
+      result.level = dominantLevel;
+      await result.save();
+
+      // Update student main level too
+      if (result.student_id) {
+        result.student_id.level = dominantLevel;
+        await result.student_id.save();
+      }
+
+      console.log(
+        `Updated ${result.student_id?.reg_no} to level ${dominantLevel} for ${session} semester ${semester}`
+      );
+    }
+
+    console.log("Semester and student levels corrected successfully!");
+  } catch (err) {
+    console.error("Error correcting levels:", err);
+  }
+};
+
+// correctSemesterLevels();

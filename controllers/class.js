@@ -53,6 +53,11 @@ module.exports.register_students = async (req, res, next) => {
         const fullname = studentObj[reg_no];
         if (!reg_no || !fullname) continue;
 
+        // ✅ Validation: reg_no must start with a number, fullname must start with a letter
+        if (!/^[0-9]/.test(reg_no.trim()) || !/^[A-Za-z]/.test(fullname.trim())) {
+          continue; // ignore invalid entries
+        }
+
         let student = await Student.findOne({ reg_no });
 
         if (!student) {
