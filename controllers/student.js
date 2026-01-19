@@ -3,6 +3,12 @@ const SemesterResult = require("../models/semester_result");
 const Class = require("../models/class");
 const Session = require("../models/session");
 const professionals = require("../utils/professionals");
+const {
+  calculateGrade,
+  get_gpa,
+  get_session_gpa,
+  get_cgpa,
+} = require("../utils/grade_utils");
 
 module.exports.get_student = async (req, res) => {
   const { reg_no } = req.body;
@@ -125,6 +131,123 @@ module.exports.searchStudent = async (req, res) => {
     res.status(200).json({ student, message: "student fetched successfully!" });
   } catch (err) {
     res.status(500).json({ message: "Error searching student" });
+  }
+};
+
+module.exports.getSemesterResultsByRegNo = async (req, res) => {
+  const { reg_no, session, semester } = req.body;
+
+  if (!reg_no || !session || !semester) {
+    return res
+      .status(400)
+      .json({ message: "reg_no, session, and semester are required" });
+  }
+
+  try {
+    const student = await Student.findOne({ reg_no });
+    if (!student) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    const semesterResult = await SemesterResult.findOne({
+      student_id: student._id,
+      session,
+      semester: Number(semester),
+    });
+
+    if (!semesterResult) {
+      return res
+        .status(404)
+        .json({ message: "Semester result not found for this student" });
+    }
+
+    res.status(200).json({
+      student,
+      semester_result: semesterResult,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Error fetching semester result" });
+  }
+};
+
+module.exports.updateStudentCourseTotal = async (req, res) => {
+  const { reg_no, session, semester, course_code, total } = req.body;
+
+  if (!reg_no || !session || !semester || !course_code || total === undefined) {
+    return res.status(400).json({
+      message: "reg_no, session, semester, course_code, and total are required",
+    });
+  }
+
+  try {
+    const student = await Student.findOne({ reg_no });
+    if (!student) {
+      return res.status(404).json({ message: "Student not found" });
+    }
+
+    const semesterResult = await SemesterResult.findOne({
+      student_id: student._id,
+      session,
+      semester: Number(semester),
+    });
+
+    if (!semesterResult) {
+      return res
+        .status(404)
+        .json({ message: "Semester result not found" });
+    }
+
+    const course = semesterResult.courses.find(
+      (c) => c.course_code === course_code
+    );
+
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    const totalScore = Number(total);
+    if (Number.isNaN(totalScore)) {
+      return res.status(400).json({ message: "total must be a number" });
+    }
+
+    course.total = totalScore;
+    course.ca = Number((totalScore * 0.3).toFixed(2));
+    course.exam = Number((totalScore * 0.7).toFixed(2));
+
+    if (["pct224", "pct422"].includes(course_code.toLowerCase())) {
+      course.grade = await calculateGrade(course.total, "ceutics");
+    } else if (course_code.toLowerCase() in professionals) {
+      course.grade = await calculateGrade(course.total, "regular");
+    } else {
+      course.grade = await calculateGrade(course.total, "external");
+    }
+
+    semesterResult.gpa = Number(get_gpa(semesterResult));
+
+    if (Number(semester) === 2) {
+      const sessionResults = await SemesterResult.find({
+        student_id: student._id,
+        session,
+      });
+      semesterResult.session_gpa = Number(get_session_gpa(sessionResults));
+    }
+
+    await semesterResult.save();
+
+    student.cgpa = Number(await get_cgpa(student._id.toString()));
+    await student.save();
+
+    res.status(200).json({
+      message: "Course score updated successfully",
+      course,
+      gpa: semesterResult.gpa,
+      session_gpa: semesterResult.session_gpa,
+      cgpa: student.cgpa,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Error updating course score" });
   }
 };
 
@@ -302,17 +425,24 @@ module.exports.updateMoe = async (req, res) => {
   }
 };
 
-const correctSemesterLevels = async () => {
+module.exports.correctSemesterLevels = async (req, res) => {
   try {
-    const session = "2024-2025";
-    const semester = 1; // First semester
+    const { session, semester } = req.body;
+    const parsedSemester = Number(semester);
+
+    if (!session || ![1, 2].includes(parsedSemester)) {
+      return res
+        .status(400)
+        .json({ message: "session and semester (1 or 2) are required" });
+    }
 
     // Get all semester results for the session and semester
     const semesterResults = await SemesterResult.find({
       session,
-      semester,
+      semester: parsedSemester,
     }).populate("student_id");
 
+    let updatedCount = 0;
     for (const result of semesterResults) {
       if (!result.courses || result.courses.length === 0) continue;
 
@@ -334,24 +464,29 @@ const correctSemesterLevels = async () => {
       const dominantLevel = parseInt(dominant[0]) * 100; // e.g., "4" → 400
 
       // Update semester result level
-      result.level = dominantLevel;
-      await result.save();
+      if (result.level !== dominantLevel) {
+        result.level = dominantLevel;
+        await result.save();
+        updatedCount += 1;
+      }
 
       // Update student main level too
       if (result.student_id) {
-        result.student_id.level = dominantLevel;
-        await result.student_id.save();
+        if (result.student_id.level !== dominantLevel) {
+          result.student_id.level = dominantLevel;
+          await result.student_id.save();
+        }
       }
 
-      console.log(
-        `Updated ${result.student_id?.reg_no} to level ${dominantLevel} for ${session} semester ${semester}`
-      );
     }
 
-    console.log("Semester and student levels corrected successfully!");
+    res.status(200).json({
+      message: "Semester and student levels corrected successfully!",
+      total: semesterResults.length,
+      updated: updatedCount,
+    });
   } catch (err) {
     console.error("Error correcting levels:", err);
+    res.status(500).json({ message: "Error correcting levels" });
   }
 };
-
-// correctSemesterLevels();

@@ -643,6 +643,282 @@ module.exports.error_students = async (req, res) => {
   }
 };
 
+const parseSessionYear = (session) => {
+  const match = /^(\d{4})/.exec(session || "");
+  return match ? Number(match[1]) : null;
+};
+
+const compareSessions = (a, b) => {
+  const aYear = parseSessionYear(a);
+  const bYear = parseSessionYear(b);
+
+  if (aYear !== null && bYear !== null && aYear !== bYear) {
+    return aYear - bYear;
+  }
+
+  return String(a).localeCompare(String(b));
+};
+
+module.exports.finalists = async (req, res) => {
+  try {
+    const finalists = await Student.find({ level: 600 });
+
+    if (!finalists.length) {
+      return res.status(200).json({ sessions: [], students: [] });
+    }
+
+    const studentIds = finalists.map((student) => student._id);
+
+    const results = await SemesterResult.find({
+      student_id: { $in: studentIds },
+      level: { $gte: 200, $lte: 600 },
+    }).populate("student_id");
+
+    const sessions = Array.from(
+      new Set(results.map((result) => result.session))
+    ).sort(compareSessions);
+    const sessionIndex = new Map(
+      sessions.map((session, index) => [session, index])
+    );
+
+    const resultsByStudent = new Map();
+    results.forEach((result) => {
+      if (!result.student_id) return;
+      const key = result.student_id._id.toString();
+      if (!resultsByStudent.has(key)) {
+        resultsByStudent.set(key, []);
+      }
+      resultsByStudent.get(key).push(result);
+    });
+
+    const students = finalists
+      .map((student) => {
+        const studentResults = resultsByStudent.get(student._id.toString()) || [];
+        const attemptsByCourse = new Map();
+
+        studentResults.forEach((result) => {
+          const session = result.session;
+          const semester = Number(result.semester) || 0;
+          const level = Number(result.level) || 0;
+          const sessionOrder = sessionIndex.get(session) ?? 0;
+
+          result.courses.forEach((course) => {
+            if (!course?.course_code) return;
+
+            const total = Number(course.total) || 0;
+            const ca = Number(course.ca) || 0;
+            const exam = Number(course.exam) || 0;
+            const isGraded = total > 0 || ca > 0 || exam > 0;
+            if (!isGraded) return;
+
+            const codeKey = course.course_code.toLowerCase();
+            const attempt = {
+              course_code: course.course_code,
+              grade: Number(course.grade) || 0,
+              session,
+              semester,
+              level,
+              session_order: sessionOrder,
+            };
+
+            if (!attemptsByCourse.has(codeKey)) {
+              attemptsByCourse.set(codeKey, []);
+            }
+            attemptsByCourse.get(codeKey).push(attempt);
+          });
+        });
+
+        const issuesBySession = new Map();
+
+        attemptsByCourse.forEach((attempts) => {
+          attempts.sort((a, b) => {
+            if (a.session_order !== b.session_order) {
+              return a.session_order - b.session_order;
+            }
+            return a.semester - b.semester;
+          });
+
+          const lastAttempt = attempts[attempts.length - 1];
+          if (!lastAttempt || lastAttempt.grade !== 0) return;
+
+          if (!issuesBySession.has(lastAttempt.session)) {
+            issuesBySession.set(lastAttempt.session, new Map());
+          }
+          const levelMap = issuesBySession.get(lastAttempt.session);
+          if (!levelMap.has(lastAttempt.level)) {
+            levelMap.set(lastAttempt.level, new Set());
+          }
+          levelMap.get(lastAttempt.level).add(lastAttempt.course_code);
+        });
+
+        const issues_by_session = {};
+        issuesBySession.forEach((levelMap, session) => {
+          issues_by_session[session] = Array.from(levelMap.entries()).map(
+            ([level, coursesSet]) => ({
+              level,
+              courses: Array.from(coursesSet),
+            })
+          );
+        });
+
+        if (Object.keys(issues_by_session).length === 0) {
+          return null;
+        }
+
+        return {
+          student_id: student._id,
+          fullname: student.fullname,
+          reg_no: student.reg_no,
+          issues_by_session,
+        };
+      })
+      .filter(Boolean);
+
+    res.status(200).json({ sessions, students });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Error fetching finalists" });
+  }
+};
+
+module.exports.outstanding_failed_courses = async (req, res) => {
+  const { class_id } = req.body;
+
+  if (!class_id) {
+    return res.status(400).json({ message: "class_id is required" });
+  }
+
+  try {
+    const foundClass = await Class.findById(class_id).populate("students");
+    if (!foundClass) {
+      return res.status(404).json({ message: "Class not found" });
+    }
+
+    if (foundClass.level < 200 || foundClass.level > 600) {
+      return res.status(400).json({
+        message: "Outstanding list is available for 200 to 600 level classes.",
+      });
+    }
+
+    const studentIds = foundClass.students.map((student) => student._id);
+
+    const results = await SemesterResult.find({
+      student_id: { $in: studentIds },
+      level: { $gte: 200, $lte: 600 },
+    }).populate("student_id");
+
+    const sessions = Array.from(
+      new Set(results.map((result) => result.session))
+    ).sort(compareSessions);
+    const sessionIndex = new Map(
+      sessions.map((session, index) => [session, index])
+    );
+
+    const resultsByStudent = new Map();
+    results.forEach((result) => {
+      if (!result.student_id) return;
+      const key = result.student_id._id.toString();
+      if (!resultsByStudent.has(key)) {
+        resultsByStudent.set(key, []);
+      }
+      resultsByStudent.get(key).push(result);
+    });
+
+    const students = foundClass.students
+      .map((student) => {
+        const studentResults =
+          resultsByStudent.get(student._id.toString()) || [];
+        const attemptsByCourse = new Map();
+
+        studentResults.forEach((result) => {
+          const session = result.session;
+          const semester = Number(result.semester) || 0;
+          const level = Number(result.level) || 0;
+          const sessionOrder = sessionIndex.get(session) ?? 0;
+
+          result.courses.forEach((course) => {
+            if (!course?.course_code) return;
+
+            const total = Number(course.total) || 0;
+            const ca = Number(course.ca) || 0;
+            const exam = Number(course.exam) || 0;
+            const isGraded = total > 0 || ca > 0 || exam > 0;
+            if (!isGraded) return;
+
+            const codeKey = course.course_code.toLowerCase();
+            const attempt = {
+              course_code: course.course_code,
+              grade: Number(course.grade) || 0,
+              session,
+              semester,
+              level,
+              session_order: sessionOrder,
+            };
+
+            if (!attemptsByCourse.has(codeKey)) {
+              attemptsByCourse.set(codeKey, []);
+            }
+            attemptsByCourse.get(codeKey).push(attempt);
+          });
+        });
+
+        const issuesBySession = new Map();
+
+        attemptsByCourse.forEach((attempts) => {
+          attempts.sort((a, b) => {
+            if (a.session_order !== b.session_order) {
+              return a.session_order - b.session_order;
+            }
+            return a.semester - b.semester;
+          });
+
+          const lastAttempt = attempts[attempts.length - 1];
+          if (!lastAttempt || lastAttempt.grade !== 0) return;
+
+          if (!issuesBySession.has(lastAttempt.session)) {
+            issuesBySession.set(lastAttempt.session, new Map());
+          }
+          const levelMap = issuesBySession.get(lastAttempt.session);
+          if (!levelMap.has(lastAttempt.level)) {
+            levelMap.set(lastAttempt.level, new Set());
+          }
+          levelMap.get(lastAttempt.level).add(lastAttempt.course_code);
+        });
+
+        const issues_by_session = {};
+        issuesBySession.forEach((levelMap, session) => {
+          issues_by_session[session] = Array.from(levelMap.entries()).map(
+            ([level, coursesSet]) => ({
+              level,
+              courses: Array.from(coursesSet),
+            })
+          );
+        });
+
+        if (Object.keys(issues_by_session).length === 0) {
+          return null;
+        }
+
+        return {
+          student_id: student._id,
+          fullname: student.fullname,
+          reg_no: student.reg_no,
+          issues_by_session,
+        };
+      })
+      .filter(Boolean);
+
+    res.status(200).json({
+      class: { id: foundClass._id, level: foundClass.level },
+      sessions,
+      students,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Error fetching outstanding courses" });
+  }
+};
+
 const cleanStudentNames = async () => {
   try {
     const students = await Student.find({}, "fullname");

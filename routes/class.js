@@ -9,6 +9,8 @@ router.post("/score", class_controller.add_score);
 router.post("/", class_controller.get_class);
 router.post("/probation", class_controller.probation_list);
 router.post("/error", class_controller.error_students);
+router.get("/finalists", class_controller.finalists);
+router.post("/outstanding", class_controller.outstanding_failed_courses);
 router.get(
   "/:session/:semester/:course_code",
   class_controller.get_students_by_course

@@ -14,6 +14,14 @@ router.get(
 );
 // Search student by reg_no
 router.post("/search", student_controller.searchStudent);
+router.post(
+  "/semester-result",
+  student_controller.getSemesterResultsByRegNo
+);
+router.put(
+  "/update-course-total",
+  student_controller.updateStudentCourseTotal
+);
 
 // Update student name
 router.put("/update-name", student_controller.updateStudentName);
@@ -39,5 +47,9 @@ router.delete("/remove-student", student_controller.removeStudent);
 router.post("/moe", student_controller.moe);
 
 router.put("/moe/update", student_controller.updateMoe)
+router.post(
+  "/correct-semester-levels",
+  student_controller.correctSemesterLevels
+);
 
 module.exports = router;
