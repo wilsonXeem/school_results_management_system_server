@@ -5,7 +5,7 @@ const semesterResultSchema = new Schema(
   {
     student_id: { type: Schema.Types.ObjectId, ref: "Student", index: true }, // Indexing for faster queries
     session: { type: String, required: true, index: true },
-    level: { type: Number, required: true },
+    level: { type: Number },
     semester: { type: Number, required: true },
     gpa: { type: Number, default: 0 },
     session_gpa: { type: Number, default: 0 },
