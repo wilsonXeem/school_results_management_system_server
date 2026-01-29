@@ -1,4 +1,17 @@
 const SemesterResult = require("../models/semester_result");
+const professionals = require("./professionals");
+const external = require("./external");
+
+// Function to check if a course is approved for GPA calculation
+const isApprovedCourse = (courseCode) => {
+  const code = courseCode.toLowerCase();
+  return code in professionals || code in external;
+};
+
+// Function to filter approved courses
+const filterApprovedCourses = (courses) => {
+  return courses.filter(course => isApprovedCourse(course.course_code));
+};
 
 // Function to calculate grade based on score
 const calculateGrade = (score, type) => {
@@ -28,7 +41,9 @@ const get_gpa = (semesterResult) => {
   let totalPoints = 0;
   let totalUnits = 0;
 
-  semesterResult.courses.forEach((course) => {
+  const approvedCourses = filterApprovedCourses(semesterResult.courses);
+  
+  approvedCourses.forEach((course) => {
     totalPoints += course.grade * course.unit_load;
     totalUnits += course.unit_load;
   });
@@ -36,13 +51,15 @@ const get_gpa = (semesterResult) => {
   return totalUnits > 0 ? (totalPoints / totalUnits).toFixed(2) : 0;
 };
 
-// Function to calculate GPA for a semester
+// Function to calculate GPA for a session
 const get_session_gpa = (session) => {
   let totalPoints = 0;
   let totalUnits = 0;
 
   for (const semesterResult of session) {
-    semesterResult?.courses.forEach((course) => {
+    const approvedCourses = filterApprovedCourses(semesterResult?.courses || []);
+    
+    approvedCourses.forEach((course) => {
       totalPoints += course.grade * course.unit_load;
       totalUnits += course.unit_load;
     });
@@ -69,7 +86,9 @@ const get_cgpa = async (student_id) => {
       return; // Skip this semester if no courses
     }
 
-    semester.courses.forEach((course) => {
+    const approvedCourses = filterApprovedCourses(semester.courses);
+    
+    approvedCourses.forEach((course) => {
       if (!course.grade || !course.unit_load) {
         console.log("Invalid course data:", course);
         return; // Skip if data is missing
@@ -83,4 +102,4 @@ const get_cgpa = async (student_id) => {
   return totalUnits > 0 ? (totalPoints / totalUnits).toFixed(2) : 0;
 };
 
-module.exports = { calculateGrade, get_gpa, get_session_gpa, get_cgpa };
+module.exports = { calculateGrade, get_gpa, get_session_gpa, get_cgpa, isApprovedCourse, filterApprovedCourses };

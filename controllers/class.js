@@ -11,6 +11,7 @@ const {
   get_gpa,
   get_cgpa,
   get_session_gpa,
+  filterApprovedCourses,
 } = require("../utils/grade_utils");
 
 module.exports.register_students = async (req, res, next) => {
@@ -1253,7 +1254,9 @@ const updateSemesterGPAs = async () => {
       let totalUnits = 0;
       let totalPoints = 0;
 
-      for (let course of result.courses) {
+      const approvedCourses = filterApprovedCourses(result.courses);
+      
+      for (let course of approvedCourses) {
         const unit = course.unit_load || 0;
         const grade = course.grade || 0;
 
@@ -1298,7 +1301,9 @@ const calculateSessionGPA = async () => {
       for (const result of semesterResults) {
         if (result.semester === 2) secondSemesterId = result._id;
 
-        for (const course of result.courses) {
+        const approvedCourses = filterApprovedCourses(result.courses);
+        
+        for (const course of approvedCourses) {
           const gradePoint = course.grade;
           const unit = course.unit_load;
 
@@ -1335,7 +1340,9 @@ async function updateAllStudentsCGPA() {
       let totalPoints = 0;
 
       for (const result of results) {
-        for (const course of result.courses) {
+        const approvedCourses = filterApprovedCourses(result.courses);
+        
+        for (const course of approvedCourses) {
           totalUnits += course.unit_load;
           totalPoints += course.unit_load * course.grade;
         }
