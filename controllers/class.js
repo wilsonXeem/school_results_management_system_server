@@ -1043,6 +1043,7 @@ const updateGrades = async () => {
 
 module.exports.getTopStudents = async (req, res) => {
   const { class_id } = req.params; // Get class_id from request body
+  const limit = Number(req.query.limit) || 10;
 
   try {
     // Find the class by ID and populate students
@@ -1055,7 +1056,7 @@ module.exports.getTopStudents = async (req, res) => {
     // Sort students by CGPA in descending order and get the top 10
     const topStudents = foundClass.students
       .sort((a, b) => b.cgpa - a.cgpa)
-      .slice(0, 10)
+      .slice(0, limit)
       .map((student) => ({
         reg_no: student.reg_no,
         fullname: student.fullname,
@@ -1066,6 +1067,107 @@ module.exports.getTopStudents = async (req, res) => {
   } catch (error) {
     console.error("Error fetching top students:", error);
     res.status(500).json({ message: "Error fetching top students" });
+  }
+};
+
+module.exports.getTopStudentsByDepartment = async (req, res) => {
+  const { class_id } = req.params;
+  const { department_id } = req.body;
+  const limit = Number(req.query.limit) || 10;
+
+  if (!class_id || !department_id) {
+    return res.status(400).json({ message: "class_id and department_id are required" });
+  }
+
+  try {
+    const foundClass = await Class.findById(class_id).populate("students");
+    if (!foundClass) {
+      return res.status(404).json({ message: "Class not found" });
+    }
+
+    const studentIds = foundClass.students.map((student) => student._id);
+    const results = await SemesterResult.find({
+      student_id: { $in: studentIds },
+      level: { $gte: 200, $lte: foundClass.level },
+    }).populate("student_id");
+
+    const resultsByStudent = new Map();
+    results.forEach((result) => {
+      if (!result.student_id) return;
+      const key = result.student_id._id.toString();
+      if (!resultsByStudent.has(key)) {
+        resultsByStudent.set(key, []);
+      }
+      resultsByStudent.get(key).push(result);
+    });
+
+    const deptId = String(department_id);
+    const deptPrefixes = {
+      "1": ["pti"],
+      "2": ["pct"],
+      "3": ["pch"],
+      "4": ["pcg"],
+      "5": ["pcl"],
+      "6": [],
+      "7": ["pmb"],
+      "8": ["cpm"],
+      "9": ["paa"],
+    };
+
+    const topStudents = foundClass.students
+      .map((student) => {
+        const studentResults = resultsByStudent.get(student._id.toString()) || [];
+        let totalScores = 0;
+        let courseCount = 0;
+
+        studentResults.forEach((result) => {
+          result.courses.forEach((course) => {
+            if (!course?.course_code) return;
+            const code = course.course_code.toLowerCase();
+            if (!(code in professionals)) return;
+
+            const prefixes = deptPrefixes[deptId] || [];
+            if (prefixes.length > 0) {
+              if (!prefixes.some((prefix) => code.startsWith(prefix))) return;
+            } else {
+              const match = code.match(/(\d+)\s*$/);
+              if (!match) return;
+              const lastDigit = match[1][match[1].length - 1];
+              if (lastDigit !== deptId) return;
+            }
+
+            const score =
+              course.total !== undefined && course.total !== null
+                ? Number(course.total)
+                : Number(course.grade);
+            if (!Number.isFinite(score)) return;
+            totalScores += score;
+            courseCount += 1;
+          });
+        });
+
+        if (courseCount === 0) {
+          return null;
+        }
+
+        const deptGpa = totalScores / courseCount;
+        return {
+          reg_no: student.reg_no,
+          fullname: student.fullname,
+          cgpa: student.cgpa,
+          department_gpa: Number(deptGpa.toFixed(2)),
+          total_courses: courseCount,
+          total_score: totalScores,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.department_gpa - a.department_gpa)
+      .slice(0, limit);
+
+    res.status(200).json({ topStudents });
+  } catch (error) {
+    console.error("Error fetching top students by department:", error);
+    res.status(500).json({ message: "Error fetching top students by department" });
   }
 };
 

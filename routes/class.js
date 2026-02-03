@@ -16,5 +16,9 @@ router.get(
   class_controller.get_students_by_course
 );
 router.get("/topstudents/:class_id", class_controller.getTopStudents);
+router.post(
+  "/topstudents/department/:class_id",
+  class_controller.getTopStudentsByDepartment
+);
 
 module.exports = router;
