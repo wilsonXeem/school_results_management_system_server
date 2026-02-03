@@ -1108,7 +1108,7 @@ module.exports.getTopStudentsByDepartment = async (req, res) => {
       "3": ["pch"],
       "4": ["pcg"],
       "5": ["pcl"],
-      "6": [],
+      "6": ["cpm"],
       "7": ["pmb"],
       "8": ["cpm"],
       "9": ["paa"],
