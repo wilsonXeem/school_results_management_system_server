@@ -20,5 +20,9 @@ router.post(
   "/topstudents/department/:class_id",
   class_controller.getTopStudentsByDepartment
 );
+router.get("/find-duplicates", class_controller.findDuplicates);
+router.post("/merge-specific-duplicate", class_controller.mergeSpecificDuplicate);
+router.post("/merge-duplicates", class_controller.mergeDuplicateStudents);
+router.post("/trim-regnos", class_controller.trimAllRegNos);
 
 module.exports = router;

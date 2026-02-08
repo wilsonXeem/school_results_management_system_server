@@ -50,12 +50,12 @@ module.exports.register_students = async (req, res, next) => {
 
     for (const studentObj of students) {
       try {
-        const reg_no = Object.keys(studentObj)[0];
-        const fullname = studentObj[reg_no];
+        const reg_no = Object.keys(studentObj)[0].trim();
+        const fullname = studentObj[Object.keys(studentObj)[0]].trim();
         if (!reg_no || !fullname) continue;
 
         // ✅ Validation: reg_no must start with a number, fullname must start with a letter
-        if (!/^[0-9]/.test(reg_no.trim()) || !/^[A-Za-z]/.test(fullname.trim())) {
+        if (!/^[0-9]/.test(reg_no) || !/^[A-Za-z]/.test(fullname)) {
           continue; // ignore invalid entries
         }
 
@@ -196,7 +196,7 @@ module.exports.register_external = async (req, res, next) => {
     const studentsData = [];
 
     for (const studentObj of students) {
-      const reg_no = Object.keys(studentObj)[0];
+      const reg_no = Object.keys(studentObj)[0].trim();
       if (!reg_no) continue;
 
       try {
@@ -299,6 +299,7 @@ module.exports.add_score = async (req, res, next) => {
     for (const studentData of students) {
       try {
         let { reg_no, ca, exam } = studentData;
+        reg_no = reg_no.trim();
         ca = Number(ca);
         exam = Number(exam);
 
@@ -1171,23 +1172,168 @@ module.exports.getTopStudentsByDepartment = async (req, res) => {
   }
 };
 
-const mergeDuplicateStudents = async () => {
+module.exports.findDuplicates = async (req, res) => {
+  try {
+    // Find exact duplicates
+    const exactDuplicates = await Student.aggregate([
+      {
+        $group: {
+          _id: "$reg_no",
+          count: { $sum: 1 },
+          studentIds: { $push: "$_id" },
+        },
+      },
+      { $match: { count: { $gt: 1 } } },
+    ]);
+
+    const duplicateDetails = [];
+
+    // Process exact duplicates
+    for (let duplicate of exactDuplicates) {
+      const profiles = await Student.find({ _id: { $in: duplicate.studentIds } });
+      const profilesWithDetails = [];
+
+      for (let profile of profiles) {
+        const semesterResults = await SemesterResult.find({ student_id: profile._id });
+        const totalCourses = semesterResults.reduce((sum, res) => sum + res.courses.length, 0);
+
+        profilesWithDetails.push({
+          _id: profile._id,
+          fullname: profile.fullname,
+          reg_no: profile.reg_no,
+          level: profile.level,
+          cgpa: profile.cgpa,
+          totalSemesters: semesterResults.length,
+          totalCourses,
+        });
+      }
+
+      duplicateDetails.push({
+        reg_no: duplicate._id,
+        count: duplicate.count,
+        profiles: profilesWithDetails,
+      });
+    }
+
+    // Find whitespace-based duplicates
+    const allStudents = await Student.find();
+    const trimmedMap = new Map();
+
+    for (let student of allStudents) {
+      const trimmed = student.reg_no.trim();
+      if (!trimmedMap.has(trimmed)) {
+        trimmedMap.set(trimmed, []);
+      }
+      trimmedMap.get(trimmed).push(student._id);
+    }
+
+    // Process whitespace duplicates
+    for (let [trimmedRegNo, studentIds] of trimmedMap) {
+      if (studentIds.length > 1) {
+        const profiles = await Student.find({ _id: { $in: studentIds } });
+        const profilesWithDetails = [];
+
+        for (let profile of profiles) {
+          const semesterResults = await SemesterResult.find({ student_id: profile._id });
+          const totalCourses = semesterResults.reduce((sum, res) => sum + res.courses.length, 0);
+
+          profilesWithDetails.push({
+            _id: profile._id,
+            fullname: profile.fullname,
+            reg_no: profile.reg_no,
+            level: profile.level,
+            cgpa: profile.cgpa,
+            totalSemesters: semesterResults.length,
+            totalCourses,
+          });
+        }
+
+        duplicateDetails.push({
+          reg_no: trimmedRegNo,
+          count: studentIds.length,
+          profiles: profilesWithDetails,
+        });
+      }
+    }
+
+    res.status(200).json({ duplicates: duplicateDetails });
+  } catch (error) {
+    console.error("Error finding duplicates:", error);
+    res.status(500).json({ message: "Error finding duplicates", error: error.message });
+  }
+};
+
+module.exports.mergeSpecificDuplicate = async (req, res) => {
+  try {
+    const { reg_no, keepId } = req.body;
+
+    if (!reg_no || !keepId) {
+      return res.status(400).json({ message: "reg_no and keepId are required" });
+    }
+
+    const allProfiles = await Student.find({ reg_no });
+    const mainStudent = allProfiles.find(s => s._id.toString() === keepId);
+    const duplicateStudents = allProfiles.filter(s => s._id.toString() !== keepId);
+
+    if (!mainStudent) {
+      return res.status(404).json({ message: "Selected profile not found" });
+    }
+
+    for (let duplicateStudent of duplicateStudents) {
+      const duplicateResults = await SemesterResult.find({ student_id: duplicateStudent._id });
+
+      for (let result of duplicateResults) {
+        const existingResult = await SemesterResult.findOne({
+          student_id: mainStudent._id,
+          session: result.session,
+          semester: result.semester,
+        });
+
+        if (existingResult) {
+          for (let course of result.courses) {
+            if (!existingResult.courses.some((c) => c.course_code === course.course_code)) {
+              existingResult.courses.push(course);
+            }
+          }
+          await existingResult.save();
+        } else {
+          result.student_id = mainStudent._id;
+          await result.save();
+        }
+      }
+
+      await Student.deleteOne({ _id: duplicateStudent._id });
+    }
+
+    res.status(200).json({
+      message: `Successfully merged ${duplicateStudents.length} duplicate profile(s) for ${reg_no}`,
+      merged: duplicateStudents.length,
+    });
+  } catch (error) {
+    console.error("Error merging specific duplicate:", error);
+    res.status(500).json({ message: "Error merging duplicate", error: error.message });
+  }
+};
+
+module.exports.mergeDuplicateStudents = async (req, res) => {
   try {
     console.log("Starting student cleanup...");
 
     // Step 1: Normalize all reg_no values (trim spaces)
     const students = await Student.find();
+    let normalizedCount = 0;
+    
     for (let student of students) {
-      const trimmedRegNo = student.reg_no.trim(); // Remove spaces
+      const trimmedRegNo = student.reg_no.trim();
       if (trimmedRegNo !== student.reg_no) {
         const existingStudent = await Student.findOne({ reg_no: trimmedRegNo });
 
         if (!existingStudent) {
-          // No duplicate, safe to update
           await Student.updateOne(
             { _id: student._id },
             { reg_no: trimmedRegNo }
           );
+          normalizedCount++;
         }
       }
     }
@@ -1203,15 +1349,20 @@ const mergeDuplicateStudents = async () => {
           studentIds: { $push: "$_id" },
         },
       },
-      { $match: { count: { $gt: 1 } } }, // Find students with duplicate reg_no
+      { $match: { count: { $gt: 1 } } },
     ]);
 
     if (duplicates.length === 0) {
       console.log("No duplicate students found.");
-      return;
+      return res.status(200).json({
+        message: "No duplicate students found",
+        normalized: normalizedCount,
+        merged: 0,
+      });
     }
 
     console.log(`Found ${duplicates.length} duplicate reg_no entries.`);
+    let mergedCount = 0;
 
     // Step 3: Merge students
     for (let duplicate of duplicates) {
@@ -1219,34 +1370,25 @@ const mergeDuplicateStudents = async () => {
 
       console.log(`Processing duplicates for reg_no: ${reg_no}`);
 
-      // Fetch all student records for this reg_no
       const studentProfiles = await Student.find({ _id: { $in: studentIds } });
 
-      // Sort students: Keep the one with most semester results & courses
-      studentProfiles.sort(async (a, b) => {
-        const aResults = await SemesterResult.find({ student_id: a._id });
-        const bResults = await SemesterResult.find({ student_id: b._id });
+      // Find the student with most semester results
+      let mainStudent = studentProfiles[0];
+      let maxResults = 0;
 
-        const aTotalCourses = aResults.reduce(
-          (sum, res) => sum + res.courses.length,
-          0
-        );
-        const bTotalCourses = bResults.reduce(
-          (sum, res) => sum + res.courses.length,
-          0
-        );
+      for (let student of studentProfiles) {
+        const results = await SemesterResult.find({ student_id: student._id });
+        const totalCourses = results.reduce((sum, res) => sum + res.courses.length, 0);
+        
+        if (results.length > maxResults || (results.length === maxResults && totalCourses > 0)) {
+          maxResults = results.length;
+          mainStudent = student;
+        }
+      }
 
-        return (
-          bResults.length - aResults.length || bTotalCourses - aTotalCourses
-        );
-      });
+      const duplicateStudents = studentProfiles.filter(s => s._id.toString() !== mainStudent._id.toString());
 
-      const mainStudent = studentProfiles[0]; // The best profile to keep
-      const duplicateStudents = studentProfiles.slice(1); // The ones to merge & delete
-
-      console.log(
-        `Keeping student: ${mainStudent._id}, Merging ${duplicateStudents.length} duplicates`
-      );
+      console.log(`Keeping student: ${mainStudent._id}, Merging ${duplicateStudents.length} duplicates`);
 
       // Step 4: Merge semester results before deleting
       for (let duplicateStudent of duplicateStudents) {
@@ -1262,37 +1404,36 @@ const mergeDuplicateStudents = async () => {
           });
 
           if (existingResult) {
-            // Merge courses into the existing semester result
             for (let course of result.courses) {
-              if (
-                !existingResult.courses.some(
-                  (c) => c.course_code === course.course_code
-                )
-              ) {
+              if (!existingResult.courses.some((c) => c.course_code === course.course_code)) {
                 existingResult.courses.push(course);
               }
             }
             await existingResult.save();
           } else {
-            // Move entire semester result to the main student
             result.student_id = mainStudent._id;
             await result.save();
           }
         }
 
-        // Step 5: Delete duplicate student profile AFTER merging results
         await Student.deleteOne({ _id: duplicateStudent._id });
         console.log(`Deleted duplicate student: ${duplicateStudent._id}`);
+        mergedCount++;
       }
     }
 
     console.log("Merging complete.");
+    res.status(200).json({
+      message: "Duplicate students merged successfully",
+      normalized: normalizedCount,
+      merged: mergedCount,
+      duplicatesFound: duplicates.length,
+    });
   } catch (error) {
     console.error("Error merging students:", error);
+    res.status(500).json({ message: "Error merging students", error: error.message });
   }
 };
-
-// mergeDuplicateStudents()
 
 const cleanUpGSP208Results = async () => {
   try {
@@ -1376,7 +1517,7 @@ const updateSemesterGPAs = async () => {
   }
 };
 
-updateSemesterGPAs();
+// updateSemesterGPAs();
 
 const calculateSessionGPA = async () => {
   try {
@@ -1429,7 +1570,7 @@ const calculateSessionGPA = async () => {
   }
 };
 
-calculateSessionGPA();
+// calculateSessionGPA();
 
 async function updateAllStudentsCGPA() {
   try {
@@ -1461,4 +1602,60 @@ async function updateAllStudentsCGPA() {
   }
 }
 
-updateAllStudentsCGPA();
+// updateAllStudentsCGPA();
+
+module.exports.trimAllRegNos = async (req, res) => {
+  try {
+    const students = await Student.find();
+    let trimmedCount = 0;
+    let deletedCount = 0;
+    let keptCount = 0;
+    const keptProfiles = [];
+
+    for (let student of students) {
+      const trimmedRegNo = student.reg_no.trim();
+      if (trimmedRegNo !== student.reg_no) {
+        const existingStudent = await Student.findOne({ reg_no: trimmedRegNo });
+        if (existingStudent) {
+          // Count total courses for this profile
+          const semesterResults = await SemesterResult.find({ student_id: student._id });
+          const totalCourses = semesterResults.reduce((sum, res) => sum + res.courses.length, 0);
+          
+          if (totalCourses <= 2) {
+            // Delete profile with 2 or fewer courses
+            await SemesterResult.deleteMany({ student_id: student._id });
+            await Student.deleteOne({ _id: student._id });
+            deletedCount++;
+          } else {
+            // Keep this profile, it has more than 2 courses
+            keptCount++;
+            keptProfiles.push({
+              _id: student._id,
+              reg_no: student.reg_no,
+              reg_no_length: student.reg_no.length,
+              trimmed_reg_no: trimmedRegNo,
+              fullname: student.fullname,
+              totalCourses,
+            });
+          }
+        } else {
+          student.reg_no = trimmedRegNo;
+          await student.save();
+          trimmedCount++;
+        }
+      }
+    }
+
+    res.status(200).json({
+      message: "All reg_no values processed successfully",
+      totalStudents: students.length,
+      trimmedCount,
+      deletedCount,
+      keptCount,
+      keptProfiles: keptProfiles.slice(0, 5),
+    });
+  } catch (error) {
+    console.error("Error trimming reg_no:", error);
+    res.status(500).json({ message: "Error trimming reg_no", error: error.message });
+  }
+};
