@@ -1265,26 +1265,26 @@ module.exports.findDuplicates = async (req, res) => {
 
 module.exports.mergeSpecificDuplicate = async (req, res) => {
   try {
-    const { reg_no, keepId } = req.body;
+    const { keepId, deleteIds } = req.body;
 
-    if (!reg_no || !keepId) {
-      return res.status(400).json({ message: "reg_no and keepId are required" });
+    if (!keepId || !deleteIds || !Array.isArray(deleteIds)) {
+      return res.status(400).json({ message: "keepId and deleteIds array are required" });
     }
 
-    const allProfiles = await Student.find({ reg_no });
-    const mainStudent = allProfiles.find(s => s._id.toString() === keepId);
-    const duplicateStudents = allProfiles.filter(s => s._id.toString() !== keepId);
-
+    const mainStudent = await Student.findById(keepId);
     if (!mainStudent) {
       return res.status(404).json({ message: "Selected profile not found" });
     }
 
-    for (let duplicateStudent of duplicateStudents) {
-      const duplicateResults = await SemesterResult.find({ student_id: duplicateStudent._id });
+    for (let deleteId of deleteIds) {
+      const duplicateStudent = await Student.findById(deleteId);
+      if (!duplicateStudent) continue;
+
+      const duplicateResults = await SemesterResult.find({ student_id: deleteId });
 
       for (let result of duplicateResults) {
         const existingResult = await SemesterResult.findOne({
-          student_id: mainStudent._id,
+          student_id: keepId,
           session: result.session,
           semester: result.semester,
         });
@@ -1297,17 +1297,17 @@ module.exports.mergeSpecificDuplicate = async (req, res) => {
           }
           await existingResult.save();
         } else {
-          result.student_id = mainStudent._id;
+          result.student_id = keepId;
           await result.save();
         }
       }
 
-      await Student.deleteOne({ _id: duplicateStudent._id });
+      await Student.deleteOne({ _id: deleteId });
     }
 
     res.status(200).json({
-      message: `Successfully merged ${duplicateStudents.length} duplicate profile(s) for ${reg_no}`,
-      merged: duplicateStudents.length,
+      message: `Successfully merged ${deleteIds.length} duplicate profile(s)`,
+      merged: deleteIds.length,
     });
   } catch (error) {
     console.error("Error merging specific duplicate:", error);
