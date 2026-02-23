@@ -410,19 +410,42 @@ module.exports.get_class = async (req, res) => {
       level,
     }).populate("student_id"); // Populate student details
 
+    // Compute session GPA from current session records to avoid stale persisted values.
+    const allSessionResults = await SemesterResult.find({
+      student_id: { $in: studentIds },
+      session,
+    });
+
+    const sessionResultsByStudent = new Map();
+    allSessionResults.forEach((result) => {
+      const key = String(result.student_id);
+      if (!sessionResultsByStudent.has(key)) {
+        sessionResultsByStudent.set(key, []);
+      }
+      sessionResultsByStudent.get(key).push(result);
+    });
+
     // Extract students with their results
-    const students = semesterResults.map((result) => ({
-      student_id: result.student_id._id,
-      fullname: result.student_id.fullname,
-      reg_no: result.student_id.reg_no,
-      level: result.student_id.level,
-      cgpa: result.student_id.cgpa,
-      gpa: result.gpa,
-      session_gpa: result.session_gpa,
-      semester,
-      session: result.session,
-      courses: result.courses, // Include their courses for the semester
-    }));
+    const students = semesterResults.map((result) => {
+      const sessionResults =
+        sessionResultsByStudent.get(String(result.student_id?._id)) || [];
+      const computedSessionGpa = Number(get_session_gpa(sessionResults));
+
+      return {
+        student_id: result.student_id._id,
+        fullname: result.student_id.fullname,
+        reg_no: result.student_id.reg_no,
+        level: result.student_id.level,
+        cgpa: result.student_id.cgpa,
+        gpa: result.gpa,
+        session_gpa: Number.isFinite(computedSessionGpa)
+          ? computedSessionGpa
+          : result.session_gpa,
+        semester,
+        session: result.session,
+        courses: result.courses, // Include their courses for the semester
+      };
+    });
 
     res.status(200).json({
       class: foundClass,

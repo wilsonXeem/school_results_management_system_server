@@ -3,9 +3,12 @@ const professionals = require("./professionals");
 const external = require("./external");
 
 // Function to check if a course is approved for GPA calculation
-const isApprovedCourse = (courseCode) => {
-  const code = courseCode.toLowerCase();
-  return code in professionals || code in external;
+const isApprovedCourse = (courseCode = "") => {
+  const code = String(courseCode).toLowerCase().trim();
+  return (
+    Object.prototype.hasOwnProperty.call(professionals, code) ||
+    Object.prototype.hasOwnProperty.call(external, code)
+  );
 };
 
 // Function to filter approved courses
@@ -41,11 +44,15 @@ const get_gpa = (semesterResult) => {
   let totalPoints = 0;
   let totalUnits = 0;
 
-  const approvedCourses = filterApprovedCourses(semesterResult.courses);
-  
-  approvedCourses.forEach((course) => {
-    totalPoints += course.grade * course.unit_load;
-    totalUnits += course.unit_load;
+  (semesterResult?.courses || []).forEach((course) => {
+    const grade = Number(course.grade);
+    const unitLoad = Number(course.unit_load);
+    // Include all registered courses; treat missing grade as 0.
+    const safeGrade = Number.isFinite(grade) ? grade : 0;
+    if (!Number.isFinite(unitLoad) || unitLoad <= 0) return;
+
+    totalPoints += safeGrade * unitLoad;
+    totalUnits += unitLoad;
   });
 
   return totalUnits > 0 ? (totalPoints / totalUnits).toFixed(2) : 0;
@@ -57,11 +64,15 @@ const get_session_gpa = (session) => {
   let totalUnits = 0;
 
   for (const semesterResult of session) {
-    const approvedCourses = filterApprovedCourses(semesterResult?.courses || []);
-    
-    approvedCourses.forEach((course) => {
-      totalPoints += course.grade * course.unit_load;
-      totalUnits += course.unit_load;
+    (semesterResult?.courses || []).forEach((course) => {
+      const grade = Number(course.grade);
+      const unitLoad = Number(course.unit_load);
+      // Include all registered courses; treat missing grade as 0.
+      const safeGrade = Number.isFinite(grade) ? grade : 0;
+      if (!Number.isFinite(unitLoad) || unitLoad <= 0) return;
+
+      totalPoints += safeGrade * unitLoad;
+      totalUnits += unitLoad;
     });
   }
 
@@ -89,13 +100,17 @@ const get_cgpa = async (student_id) => {
     const approvedCourses = filterApprovedCourses(semester.courses);
     
     approvedCourses.forEach((course) => {
-      if (!course.grade || !course.unit_load) {
+      const grade = Number(course.grade);
+      const unitLoad = Number(course.unit_load);
+
+      // Include failed courses (grade 0), but skip missing/invalid values.
+      if (!Number.isFinite(grade) || !Number.isFinite(unitLoad) || unitLoad <= 0) {
         console.log("Invalid course data:", course);
-        return; // Skip if data is missing
+        return;
       }
 
-      totalPoints += course.grade * course.unit_load;
-      totalUnits += course.unit_load;
+      totalPoints += grade * unitLoad;
+      totalUnits += unitLoad;
     });
   });
 

@@ -3,12 +3,39 @@ const SemesterResult = require("../models/semester_result");
 const Class = require("../models/class");
 const Session = require("../models/session");
 const professionals = require("../utils/professionals");
+const external = require("../utils/external");
 const {
   calculateGrade,
   get_gpa,
   get_session_gpa,
   get_cgpa,
 } = require("../utils/grade_utils");
+
+const isTranscriptCourse = (courseCode = "") => {
+  const code = String(courseCode).toLowerCase().trim();
+  return (
+    Object.prototype.hasOwnProperty.call(professionals, code) ||
+    Object.prototype.hasOwnProperty.call(external, code)
+  );
+};
+
+const getApprovedTotals = (courses = []) => {
+  let units = 0;
+  let gp = 0;
+
+  courses.forEach((course) => {
+    if (!isTranscriptCourse(course?.course_code)) return;
+    const unitLoad = Number(course.unit_load);
+    const grade = Number(course.grade);
+    if (!Number.isFinite(unitLoad) || unitLoad <= 0) return;
+    const safeGrade = Number.isFinite(grade) ? grade : 0;
+
+    units += unitLoad;
+    gp += unitLoad * safeGrade;
+  });
+
+  return { units, gp };
+};
 
 module.exports.get_student = async (req, res) => {
   const { reg_no } = req.body;
@@ -86,19 +113,24 @@ module.exports.get_results_by_session = async (req, res) => {
         ?.courses.filter((course) => !(course.course_code in professionals)) ||
       [];
 
-    // Calculate session CGPA based on total unit load and grades
-    let totalGradePoints = 0;
-    let totalUnitLoad = 0;
+    // Keep session GPA consistent with results page logic (all registered courses).
+    const sessionCgpa = Number(get_session_gpa(results));
 
-    results.forEach((result) => {
-      result.courses.forEach((course) => {
-        totalGradePoints += course.unit_load * course.grade;
-        totalUnitLoad += course.unit_load;
-      });
+    // Overall totals up to current level on approved (professional + external) courses only.
+    const allResults = await SemesterResult.find({ student_id }).sort({
+      level: 1,
+      session: 1,
+      semester: 1,
     });
-
-    const sessionCgpa =
-      totalUnitLoad > 0 ? (totalGradePoints / totalUnitLoad).toFixed(2) : 0;
+    let overallUnits = 0;
+    let overallGp = 0;
+    allResults
+      .filter((result) => Number(result.level) <= Number(level))
+      .forEach((result) => {
+        const { units, gp } = getApprovedTotals(result?.courses || []);
+        overallUnits += units;
+        overallGp += gp;
+      });
 
     res.status(200).json({
       fullname: student.fullname,
@@ -113,6 +145,8 @@ module.exports.get_results_by_session = async (req, res) => {
       second_external: secondExternal,
       session_cgpa: Number(sessionCgpa),
       cgpa: student.cgpa,
+      overall_units: overallUnits,
+      overall_gp: overallGp,
     });
   } catch (err) {
     console.error(err);
