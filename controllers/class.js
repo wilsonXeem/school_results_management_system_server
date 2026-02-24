@@ -733,10 +733,12 @@ module.exports.finalists = async (req, res) => {
             const total = Number(course.total) || 0;
             const ca = Number(course.ca) || 0;
             const exam = Number(course.exam) || 0;
-            const isGraded = total > 0 || ca > 0 || exam > 0;
-            if (!isGraded) return;
+            const isMissingResult = total === 0 && ca === 0 && exam === 0;
 
-            const codeKey = course.course_code.toLowerCase();
+            const codeKey = String(course.course_code).toLowerCase().trim();
+            if (!Object.prototype.hasOwnProperty.call(professionals, codeKey)) {
+              return;
+            }
             const attempt = {
               course_code: course.course_code,
               grade: Number(course.grade) || 0,
@@ -744,6 +746,7 @@ module.exports.finalists = async (req, res) => {
               semester,
               level,
               session_order: sessionOrder,
+              missing_result: isMissingResult,
             };
 
             if (!attemptsByCourse.has(codeKey)) {
@@ -771,17 +774,33 @@ module.exports.finalists = async (req, res) => {
           }
           const levelMap = issuesBySession.get(lastAttempt.session);
           if (!levelMap.has(lastAttempt.level)) {
-            levelMap.set(lastAttempt.level, new Set());
+            levelMap.set(lastAttempt.level, new Map());
           }
-          levelMap.get(lastAttempt.level).add(lastAttempt.course_code);
+
+          const issueType = lastAttempt.missing_result
+            ? "missing_result"
+            : attempts.length > 1
+            ? "rewrote_still_failed"
+            : "failed_not_rewritten";
+
+          levelMap.get(lastAttempt.level).set(lastAttempt.course_code, {
+            issue_type: issueType,
+            semester: lastAttempt.semester,
+          });
         });
 
         const issues_by_session = {};
         issuesBySession.forEach((levelMap, session) => {
           issues_by_session[session] = Array.from(levelMap.entries()).map(
-            ([level, coursesSet]) => ({
+            ([level, coursesMap]) => ({
               level,
-              courses: Array.from(coursesSet),
+              courses: Array.from(coursesMap.keys()),
+              details: Array.from(coursesMap.entries()).map(
+                ([course_code, meta]) => ({
+                  course_code,
+                  ...meta,
+                })
+              ),
             })
           );
         });
@@ -867,10 +886,12 @@ module.exports.outstanding_failed_courses = async (req, res) => {
             const total = Number(course.total) || 0;
             const ca = Number(course.ca) || 0;
             const exam = Number(course.exam) || 0;
-            const isGraded = total > 0 || ca > 0 || exam > 0;
-            if (!isGraded) return;
+            const isMissingResult = total === 0 && ca === 0 && exam === 0;
 
-            const codeKey = course.course_code.toLowerCase();
+            const codeKey = String(course.course_code).toLowerCase().trim();
+            if (!Object.prototype.hasOwnProperty.call(professionals, codeKey)) {
+              return;
+            }
             const attempt = {
               course_code: course.course_code,
               grade: Number(course.grade) || 0,
@@ -878,6 +899,7 @@ module.exports.outstanding_failed_courses = async (req, res) => {
               semester,
               level,
               session_order: sessionOrder,
+              missing_result: isMissingResult,
             };
 
             if (!attemptsByCourse.has(codeKey)) {
@@ -905,17 +927,33 @@ module.exports.outstanding_failed_courses = async (req, res) => {
           }
           const levelMap = issuesBySession.get(lastAttempt.session);
           if (!levelMap.has(lastAttempt.level)) {
-            levelMap.set(lastAttempt.level, new Set());
+            levelMap.set(lastAttempt.level, new Map());
           }
-          levelMap.get(lastAttempt.level).add(lastAttempt.course_code);
+
+          const issueType = lastAttempt.missing_result
+            ? "missing_result"
+            : attempts.length > 1
+            ? "rewrote_still_failed"
+            : "failed_not_rewritten";
+
+          levelMap.get(lastAttempt.level).set(lastAttempt.course_code, {
+            issue_type: issueType,
+            semester: lastAttempt.semester,
+          });
         });
 
         const issues_by_session = {};
         issuesBySession.forEach((levelMap, session) => {
           issues_by_session[session] = Array.from(levelMap.entries()).map(
-            ([level, coursesSet]) => ({
+            ([level, coursesMap]) => ({
               level,
-              courses: Array.from(coursesSet),
+              courses: Array.from(coursesMap.keys()),
+              details: Array.from(coursesMap.entries()).map(
+                ([course_code, meta]) => ({
+                  course_code,
+                  ...meta,
+                })
+              ),
             })
           );
         });
