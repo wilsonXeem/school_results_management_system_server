@@ -2,6 +2,7 @@ const SemesterResult = require("../models/semester_result");
 const Student = require("../models/student");
 const professionals = require("./professionals");
 const external = require("./external");
+const external_courses = require("./external_courses");
 
 const hasCourseCode = (catalog = {}, courseCode = "") => {
   const code = String(courseCode).toLowerCase().trim();
@@ -20,9 +21,21 @@ const filterApprovedCourses = (courses) => {
   );
 };
 
+const isExcludedExternalCourse = (courseCode = "") => {
+  const code = String(courseCode).toLowerCase().trim();
+  return (
+    hasCourseCode(external_courses, code) &&
+    !code.startsWith("hed")
+  );
+};
+
 const getSafeCourseTotals = (
   courses = [],
-  { approvedOnly = false, includeCourse = null } = {}
+  {
+    approvedOnly = false,
+    excludeHashedExternal = false,
+    includeCourse = null,
+  } = {}
 ) => {
   let totalPoints = 0;
   let totalUnits = 0;
@@ -31,6 +44,11 @@ const getSafeCourseTotals = (
   let sourceCourses = approvedOnly
     ? filterApprovedCourses(normalizedCourses)
     : normalizedCourses;
+  if (excludeHashedExternal) {
+    sourceCourses = sourceCourses.filter(
+      (course) => !isExcludedExternalCourse(course?.course_code)
+    );
+  }
   if (typeof includeCourse === "function") {
     sourceCourses = sourceCourses.filter(includeCourse);
   }
@@ -80,7 +98,8 @@ const calculateGrade = (score, type) => {
 // Function to calculate GPA for a semester
 const get_non_600_level_gpa = (semesterResult) => {
   const { totalPoints, totalUnits } = getSafeCourseTotals(
-    semesterResult?.courses || []
+    semesterResult?.courses || [],
+    { excludeHashedExternal: true }
   );
   return formatGpa(totalPoints, totalUnits);
 };
@@ -88,7 +107,8 @@ const get_non_600_level_gpa = (semesterResult) => {
 const get_600_level_gpa = (semesterResult) => {
   // Kept separate so 600-level rules can evolve independently if needed.
   const { totalPoints, totalUnits } = getSafeCourseTotals(
-    semesterResult?.courses || []
+    semesterResult?.courses || [],
+    { excludeHashedExternal: true }
   );
   return formatGpa(totalPoints, totalUnits);
 };
@@ -106,7 +126,9 @@ const get_non_600_level_session_gpa = (session = []) => {
   let totalUnits = 0;
 
   for (const semesterResult of session) {
-    const totals = getSafeCourseTotals(semesterResult?.courses || []);
+    const totals = getSafeCourseTotals(semesterResult?.courses || [], {
+      excludeHashedExternal: true,
+    });
     totalPoints += totals.totalPoints;
     totalUnits += totals.totalUnits;
   }
@@ -120,7 +142,9 @@ const get_600_level_session_gpa = (session = []) => {
   let totalUnits = 0;
 
   for (const semesterResult of session) {
-    const totals = getSafeCourseTotals(semesterResult?.courses || []);
+    const totals = getSafeCourseTotals(semesterResult?.courses || [], {
+      excludeHashedExternal: true,
+    });
     totalPoints += totals.totalPoints;
     totalUnits += totals.totalUnits;
   }
@@ -166,8 +190,11 @@ const get_cgpa = async (student_id, level) => {
     const totals = is600Level
       ? getSafeCourseTotals(semester.courses, {
           approvedOnly: true,
+          excludeHashedExternal: true,
         })
-      : getSafeCourseTotals(semester.courses);
+      : getSafeCourseTotals(semester.courses, {
+          excludeHashedExternal: true,
+        });
     totalPoints += totals.totalPoints;
     totalUnits += totals.totalUnits;
   });

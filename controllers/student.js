@@ -4,6 +4,7 @@ const Class = require("../models/class");
 const Session = require("../models/session");
 const professionals = require("../utils/professionals");
 const external = require("../utils/external");
+const external_courses = require("../utils/external_courses");
 const {
   calculateGrade,
   get_non_600_level_gpa,
@@ -24,11 +25,20 @@ const isProfessionalCourse = (courseCode = "") => {
   return Object.prototype.hasOwnProperty.call(professionals, code);
 };
 
+const isExcludedHashedExternalCourse = (courseCode = "") => {
+  const code = String(courseCode).toLowerCase().trim();
+  return (
+    Object.prototype.hasOwnProperty.call(external_courses, code) &&
+    !code.startsWith("hed")
+  );
+};
+
 const getOverallTotals = (courses = [], is600Level = false) => {
   let units = 0;
   let gp = 0;
 
   courses.forEach((course) => {
+    if (isExcludedHashedExternalCourse(course?.course_code)) return;
     if (is600Level && !isCourseIncludedFor600(course?.course_code)) return;
     const unitLoad = Number(course.unit_load);
     const grade = Number(course.grade);

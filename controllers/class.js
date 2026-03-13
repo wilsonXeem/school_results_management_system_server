@@ -4,6 +4,7 @@ const Session = require("../models/session");
 const SemesterResult = require("../models/semester_result");
 const External = require("../models/external");
 const professionals = require("../utils/professionals");
+const external_courses = require("../utils/external_courses");
 const bcrypt = require("bcrypt");
 const error = require("../utils/error_handler");
 const {
@@ -68,13 +69,29 @@ const pushSkip = (skipped, reg_no, reason) => {
   skipped.push({ reg_no, reason });
 };
 
-const getSafeCourseTotals = (courses = [], approvedOnly = false) => {
+const isExcludedHashedExternalCourse = (courseCode = "") => {
+  const code = String(courseCode ?? "").toLowerCase().trim();
+  return (
+    Object.prototype.hasOwnProperty.call(external_courses, code) &&
+    !code.startsWith("hed")
+  );
+};
+
+const getSafeCourseTotals = (
+  courses = [],
+  { approvedOnly = false, excludeHashedExternal = true } = {}
+) => {
   let totalPoints = 0;
   let totalUnits = 0;
 
   let sourceCourses = Array.isArray(courses) ? courses : [];
   if (approvedOnly) {
     sourceCourses = filterApprovedCourses(sourceCourses);
+  }
+  if (excludeHashedExternal) {
+    sourceCourses = sourceCourses.filter(
+      (course) => !isExcludedHashedExternalCourse(course?.course_code)
+    );
   }
 
   sourceCourses.forEach((course) => {
@@ -100,7 +117,10 @@ const computeDynamicCgpa = (semesterResults = [], level) => {
   let totalUnits = 0;
 
   (Array.isArray(semesterResults) ? semesterResults : []).forEach((result) => {
-    const totals = getSafeCourseTotals(result?.courses || [], is600Level);
+    const totals = getSafeCourseTotals(result?.courses || [], {
+      approvedOnly: is600Level,
+      excludeHashedExternal: true,
+    });
     totalPoints += totals.totalPoints;
     totalUnits += totals.totalUnits;
   });
