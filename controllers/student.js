@@ -4,13 +4,10 @@ const Class = require("../models/class");
 const Session = require("../models/session");
 const professionals = require("../utils/professionals");
 const external = require("../utils/external");
-const externalCourses = require("../utils/external_courses");
 const {
   calculateGrade,
   get_non_600_level_gpa,
-  get_600_level_gpa,
   get_non_600_level_session_gpa,
-  get_600_level_session_gpa,
   get_cgpa,
 } = require("../utils/grade_utils");
 
@@ -18,12 +15,8 @@ const isCourseIncludedFor600 = (courseCode = "") => {
   const code = String(courseCode).toLowerCase().trim();
   const inProfessional = Object.prototype.hasOwnProperty.call(professionals, code);
   const inExternal = Object.prototype.hasOwnProperty.call(external, code);
-  const inExternalCourses = Object.prototype.hasOwnProperty.call(
-    externalCourses,
-    code
-  );
 
-  return inProfessional || (inExternal && !inExternalCourses);
+  return inProfessional || inExternal;
 };
 
 const getOverallTotals = (courses = [], is600Level = false) => {
@@ -121,12 +114,7 @@ module.exports.get_results_by_session = async (req, res) => {
       [];
 
     // Keep session GPA consistent with results page logic (all registered courses).
-    const is600Level = Number(level) === 600;
-    const sessionCgpa = Number(
-      is600Level
-        ? get_600_level_session_gpa(results)
-        : get_non_600_level_session_gpa(results)
-    );
+    const sessionCgpa = Number(get_non_600_level_session_gpa(results));
 
     // Overall totals up to current level, using the same inclusion rule as GPA/CGPA for the level.
     const allResults = await SemesterResult.find({ student_id }).sort({
@@ -273,12 +261,7 @@ module.exports.updateStudentCourseTotal = async (req, res) => {
       course.grade = await calculateGrade(course.total, "external");
     }
 
-    const is600Level = Number(semesterResult?.level) === 600;
-    semesterResult.gpa = Number(
-      is600Level
-        ? get_600_level_gpa(semesterResult)
-        : get_non_600_level_gpa(semesterResult)
-    );
+    semesterResult.gpa = Number(get_non_600_level_gpa(semesterResult));
 
     if (Number(semester) === 2) {
       const sessionResults = await SemesterResult.find({
@@ -286,9 +269,7 @@ module.exports.updateStudentCourseTotal = async (req, res) => {
         session,
       });
       semesterResult.session_gpa = Number(
-        is600Level
-          ? get_600_level_session_gpa(sessionResults)
-          : get_non_600_level_session_gpa(sessionResults)
+        get_non_600_level_session_gpa(sessionResults)
       );
     }
 

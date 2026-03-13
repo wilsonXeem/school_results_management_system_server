@@ -2,7 +2,6 @@ const SemesterResult = require("../models/semester_result");
 const Student = require("../models/student");
 const professionals = require("./professionals");
 const external = require("./external");
-const externalCourses = require("./external_courses");
 
 const hasCourseCode = (catalog = {}, courseCode = "") => {
   const code = String(courseCode).toLowerCase().trim();
@@ -19,14 +18,6 @@ const filterApprovedCourses = (courses) => {
   return (Array.isArray(courses) ? courses : []).filter((course) =>
     isApprovedCourse(course.course_code)
   );
-};
-
-const is600LevelIncludedCourse = (courseCode = "") => {
-  const inProfessionals = hasCourseCode(professionals, courseCode);
-  const inExternal = hasCourseCode(external, courseCode);
-  const inExternalCourses = hasCourseCode(externalCourses, courseCode);
-
-  return inProfessionals || (inExternal && !inExternalCourses);
 };
 
 const getSafeCourseTotals = (
@@ -97,8 +88,7 @@ const get_non_600_level_gpa = (semesterResult) => {
 const get_600_level_gpa = (semesterResult) => {
   // Kept separate so 600-level rules can evolve independently if needed.
   const { totalPoints, totalUnits } = getSafeCourseTotals(
-    semesterResult?.courses || [],
-    { includeCourse: (course) => is600LevelIncludedCourse(course?.course_code) }
+    semesterResult?.courses || []
   );
   return formatGpa(totalPoints, totalUnits);
 };
@@ -130,9 +120,7 @@ const get_600_level_session_gpa = (session = []) => {
   let totalUnits = 0;
 
   for (const semesterResult of session) {
-    const totals = getSafeCourseTotals(semesterResult?.courses || [], {
-      includeCourse: (course) => is600LevelIncludedCourse(course?.course_code),
-    });
+    const totals = getSafeCourseTotals(semesterResult?.courses || []);
     totalPoints += totals.totalPoints;
     totalUnits += totals.totalUnits;
   }
@@ -177,7 +165,7 @@ const get_cgpa = async (student_id, level) => {
 
     const totals = is600Level
       ? getSafeCourseTotals(semester.courses, {
-          includeCourse: (course) => is600LevelIncludedCourse(course?.course_code),
+          approvedOnly: true,
         })
       : getSafeCourseTotals(semester.courses);
     totalPoints += totals.totalPoints;

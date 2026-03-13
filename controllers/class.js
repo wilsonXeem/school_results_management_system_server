@@ -9,10 +9,8 @@ const error = require("../utils/error_handler");
 const {
   calculateGrade,
   get_non_600_level_gpa,
-  get_600_level_gpa,
   get_cgpa,
   get_non_600_level_session_gpa,
-  get_600_level_session_gpa,
   filterApprovedCourses,
 } = require("../utils/grade_utils");
 
@@ -352,12 +350,7 @@ module.exports.add_score = async (req, res, next) => {
           course.grade = await calculateGrade(course.total, "external");
         }
 
-        const is600Level = Number(semesterResult?.level ?? level) === 600;
-        semesterResult.gpa = Number(
-          is600Level
-            ? get_600_level_gpa(semesterResult)
-            : get_non_600_level_gpa(semesterResult)
-        );
+        semesterResult.gpa = Number(get_non_600_level_gpa(semesterResult));
         student.cgpa = await get_cgpa(
           student._id.toString(),
           Number(student?.level ?? level)
@@ -366,9 +359,7 @@ module.exports.add_score = async (req, res, next) => {
         // Only calculate session_gpa if it's second semester AND sessionResult is available
         if (semester === 2 && sessionResult.length > 0) {
           semesterResult.session_gpa = Number(
-            is600Level
-              ? get_600_level_session_gpa(sessionResult)
-              : get_non_600_level_session_gpa(sessionResult)
+            get_non_600_level_session_gpa(sessionResult)
           );
         }
 
@@ -443,11 +434,8 @@ module.exports.get_class = async (req, res) => {
     const students = semesterResults.map((result) => {
       const sessionResults =
         sessionResultsByStudent.get(String(result.student_id?._id)) || [];
-      const is600Level = Number(result?.level ?? level) === 600;
       const computedSessionGpa = Number(
-        is600Level
-          ? get_600_level_session_gpa(sessionResults)
-          : get_non_600_level_session_gpa(sessionResults)
+        get_non_600_level_session_gpa(sessionResults)
       );
 
       return {
