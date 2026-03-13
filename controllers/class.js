@@ -8,9 +8,11 @@ const bcrypt = require("bcrypt");
 const error = require("../utils/error_handler");
 const {
   calculateGrade,
-  get_gpa,
+  get_non_600_level_gpa,
+  get_600_level_gpa,
   get_cgpa,
-  get_session_gpa,
+  get_non_600_level_session_gpa,
+  get_600_level_session_gpa,
   filterApprovedCourses,
 } = require("../utils/grade_utils");
 
@@ -350,12 +352,24 @@ module.exports.add_score = async (req, res, next) => {
           course.grade = await calculateGrade(course.total, "external");
         }
 
-        semesterResult.gpa = get_gpa(semesterResult);
-        student.cgpa = await get_cgpa(student._id.toString());
+        const is600Level = Number(semesterResult?.level ?? level) === 600;
+        semesterResult.gpa = Number(
+          is600Level
+            ? get_600_level_gpa(semesterResult)
+            : get_non_600_level_gpa(semesterResult)
+        );
+        student.cgpa = await get_cgpa(
+          student._id.toString(),
+          Number(student?.level ?? level)
+        );
 
         // Only calculate session_gpa if it's second semester AND sessionResult is available
         if (semester === 2 && sessionResult.length > 0) {
-          semesterResult.session_gpa = await get_session_gpa(sessionResult);
+          semesterResult.session_gpa = Number(
+            is600Level
+              ? get_600_level_session_gpa(sessionResult)
+              : get_non_600_level_session_gpa(sessionResult)
+          );
         }
 
         bulkUpdates.push({
@@ -429,7 +443,12 @@ module.exports.get_class = async (req, res) => {
     const students = semesterResults.map((result) => {
       const sessionResults =
         sessionResultsByStudent.get(String(result.student_id?._id)) || [];
-      const computedSessionGpa = Number(get_session_gpa(sessionResults));
+      const is600Level = Number(result?.level ?? level) === 600;
+      const computedSessionGpa = Number(
+        is600Level
+          ? get_600_level_session_gpa(sessionResults)
+          : get_non_600_level_session_gpa(sessionResults)
+      );
 
       return {
         student_id: result.student_id._id,
@@ -979,6 +998,164 @@ module.exports.outstanding_failed_courses = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error fetching outstanding courses" });
+  }
+};
+
+module.exports.temp600ThreeCourseAverage = async (req, res) => {
+  const sessionLabel = String(req.query.session || "2024-2025").trim();
+  const targetLevel = 600;
+  const targetCourses = ["ced341", "ced342", "cpm561"];
+
+  try {
+    const sessionData = await Session.findOne({ session: sessionLabel }).populate(
+      "classes"
+    );
+    if (!sessionData) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    const levelClass = (sessionData.classes || []).find(
+      (classItem) => Number(classItem.level) === targetLevel
+    );
+    if (!levelClass) {
+      return res.status(404).json({
+        message: `${targetLevel} level class not found in ${sessionLabel} session`,
+      });
+    }
+
+    const foundClass = await Class.findById(levelClass._id).populate("students");
+    if (!foundClass) {
+      return res.status(404).json({ message: "Class not found" });
+    }
+
+    const studentsInClass = foundClass.students || [];
+    const studentIds = studentsInClass.map((student) => student._id);
+
+    const results = await SemesterResult.find({
+      student_id: { $in: studentIds },
+    }).populate("student_id");
+
+    const orderedSessions = Array.from(
+      new Set(results.map((result) => String(result.session || "")))
+    ).sort(compareSessions);
+    const sessionOrderMap = new Map(
+      orderedSessions.map((session, index) => [session, index])
+    );
+
+    const studentsMap = new Map();
+    studentsInClass.forEach((student) => {
+      studentsMap.set(String(student._id), {
+        student_id: student._id,
+        fullname: student.fullname,
+        reg_no: student.reg_no,
+        attempts: {},
+      });
+    });
+
+    results.forEach((result) => {
+      const studentRef = result.student_id;
+      const studentId = String(studentRef?._id || result.student_id);
+      if (!studentsMap.has(studentId)) return;
+
+      const semesterOrder = Number(result.semester) || 0;
+      const studentData = studentsMap.get(studentId);
+
+      (result.courses || []).forEach((course) => {
+        const code = String(course?.course_code || "").toLowerCase().trim();
+        if (!targetCourses.includes(code)) return;
+
+        const total = Number(course.total);
+        const ca = Number(course.ca) || 0;
+        const exam = Number(course.exam) || 0;
+        const resolvedTotal = Number.isFinite(total) ? total : ca + exam;
+        const score = Number.isFinite(resolvedTotal) ? resolvedTotal : 0;
+
+        const previousAttempt = studentData.attempts[code];
+        const currentSessionOrder =
+          sessionOrderMap.get(String(result.session || "")) ?? -1;
+        const previousSessionOrder = previousAttempt?.session_order ?? -1;
+        const shouldReplace =
+          !previousAttempt ||
+          currentSessionOrder > previousSessionOrder ||
+          (currentSessionOrder === previousSessionOrder &&
+            semesterOrder >= previousAttempt.semester);
+
+        if (shouldReplace) {
+          studentData.attempts[code] = {
+            score,
+            semester: semesterOrder,
+            session_order: currentSessionOrder,
+          };
+        }
+      });
+    });
+
+    const courseTotals = {
+      ced341: 0,
+      ced342: 0,
+      cpm561: 0,
+    };
+
+    const students = Array.from(studentsMap.values()).map((studentData) => {
+      const scores = {
+        ced341: Number(studentData.attempts.ced341?.score) || 0,
+        ced342: Number(studentData.attempts.ced342?.score) || 0,
+        cpm561: Number(studentData.attempts.cpm561?.score) || 0,
+      };
+
+      courseTotals.ced341 += scores.ced341;
+      courseTotals.ced342 += scores.ced342;
+      courseTotals.cpm561 += scores.cpm561;
+
+      const average = (scores.ced341 + scores.ced342 + scores.cpm561) / 3;
+
+      return {
+        student_id: studentData.student_id,
+        fullname: studentData.fullname,
+        reg_no: studentData.reg_no,
+        scores,
+        average: Number(average.toFixed(2)),
+      };
+    });
+
+    students.sort((a, b) => {
+      if (b.average !== a.average) return b.average - a.average;
+      return String(a.fullname || "").localeCompare(String(b.fullname || ""));
+    });
+
+    const totalStudents = students.length;
+    const classAverage =
+      totalStudents > 0
+        ? Number(
+            (
+              students.reduce((sum, student) => sum + student.average, 0) /
+              totalStudents
+            ).toFixed(2)
+          )
+        : 0;
+
+    const courseAverages = {
+      ced341:
+        totalStudents > 0 ? Number((courseTotals.ced341 / totalStudents).toFixed(2)) : 0,
+      ced342:
+        totalStudents > 0 ? Number((courseTotals.ced342 / totalStudents).toFixed(2)) : 0,
+      cpm561:
+        totalStudents > 0 ? Number((courseTotals.cpm561 / totalStudents).toFixed(2)) : 0,
+    };
+
+    res.status(200).json({
+      session: sessionLabel,
+      level: targetLevel,
+      course_codes: targetCourses,
+      total_students: totalStudents,
+      class_average: classAverage,
+      course_averages: courseAverages,
+      highest_student: students[0] || null,
+      students,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Error fetching temporary 600-level average" });
   }
 };
 

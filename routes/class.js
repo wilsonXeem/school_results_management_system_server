@@ -12,6 +12,10 @@ router.post("/error", class_controller.error_students);
 router.get("/finalists", class_controller.finalists);
 router.post("/outstanding", class_controller.outstanding_failed_courses);
 router.get(
+  "/temp/600-three-course-average",
+  class_controller.temp600ThreeCourseAverage
+);
+router.get(
   "/:session/:semester/:course_code",
   class_controller.get_students_by_course
 );
