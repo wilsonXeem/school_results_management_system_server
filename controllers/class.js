@@ -342,6 +342,10 @@ module.exports.register_external = async (req, res, next) => {
   level = Number(level);
   semester = Number(semester);
   const normalizedCourseCode = normalizeCourseCode(course_code);
+  const normalizedCourseTitle = String(course_title ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalizedUnitLoad = Number(unit_load);
   const summary = {
     total_rows: Array.isArray(students) ? students.length : 0,
     processed: 0,
@@ -352,6 +356,13 @@ module.exports.register_external = async (req, res, next) => {
   if (!normalizedCourseCode || !session || !Number.isFinite(level) || !Number.isFinite(semester)) {
     return res.status(400).json({
       message: "course_code, session, level, and semester are required",
+      summary,
+    });
+  }
+
+  if (!normalizedCourseTitle || !Number.isFinite(normalizedUnitLoad) || normalizedUnitLoad <= 0) {
+    return res.status(400).json({
+      message: "course_title and a valid positive unit_load are required",
       summary,
     });
   }
@@ -419,9 +430,9 @@ module.exports.register_external = async (req, res, next) => {
         if (!courseExists) {
           semesterResult.courses.push({
             course_code: normalizedCourseCode,
-            course_title,
-            unit_load,
-            corrected_unit_load: unit_load,
+            course_title: normalizedCourseTitle,
+            unit_load: normalizedUnitLoad,
+            corrected_unit_load: normalizedUnitLoad,
             external,
           });
           await semesterResult.save();
@@ -463,8 +474,8 @@ module.exports.register_external = async (req, res, next) => {
         const newExternal = new External({
           session,
           course_code: normalizedCourseCode,
-          course_title,
-          unit_load,
+          course_title: normalizedCourseTitle,
+          unit_load: normalizedUnitLoad,
           semester,
         });
         await newExternal.save();
