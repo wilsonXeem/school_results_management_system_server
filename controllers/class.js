@@ -14,6 +14,18 @@ const {
   filterApprovedCourses,
 } = require("../utils/grade_utils");
 
+const normalizeRegNo = (value) => String(value ?? "").trim();
+const normalizeCourseCode = (value) => String(value ?? "").toLowerCase().trim();
+const normalizeName = (value) =>
+  String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const pushSkip = (skipped, reg_no, reason) => {
+  if (skipped.length >= 200) return;
+  skipped.push({ reg_no, reason });
+};
+
 module.exports.register_students = async (req, res, next) => {
   let {
     students, // Array of { reg_no: fullname }
@@ -28,6 +40,27 @@ module.exports.register_students = async (req, res, next) => {
 
   level = Number(level);
   semester = Number(semester);
+  const normalizedCourseCode = normalizeCourseCode(course_code);
+  const summary = {
+    total_rows: Array.isArray(students) ? students.length : 0,
+    processed: 0,
+    skipped: 0,
+    skipped_details: [],
+  };
+
+  if (!normalizedCourseCode || !session || !Number.isFinite(level) || !Number.isFinite(semester)) {
+    return res.status(400).json({
+      message: "course_code, session, level, and semester are required",
+      summary,
+    });
+  }
+
+  if (!Array.isArray(students) || students.length === 0) {
+    return res.status(400).json({
+      message: "students must be a non-empty array",
+      summary,
+    });
+  }
 
   try {
     // Get session and ensure it exists
@@ -50,13 +83,20 @@ module.exports.register_students = async (req, res, next) => {
 
     for (const studentObj of students) {
       try {
-        const reg_no = Object.keys(studentObj)[0].trim();
-        const fullname = studentObj[Object.keys(studentObj)[0]].trim();
-        if (!reg_no || !fullname) continue;
+        const [rawRegNo, rawName] = Object.entries(studentObj || {})[0] || [];
+        const reg_no = normalizeRegNo(rawRegNo);
+        const fullname = normalizeName(rawName);
+        if (!reg_no || !fullname) {
+          summary.skipped += 1;
+          pushSkip(summary.skipped_details, reg_no, "Missing reg_no or fullname");
+          continue;
+        }
 
         // ✅ Validation: reg_no must start with a number, fullname must start with a letter
         if (!/^[0-9]/.test(reg_no) || !/^[A-Za-z]/.test(fullname)) {
-          continue; // ignore invalid entries
+          summary.skipped += 1;
+          pushSkip(summary.skipped_details, reg_no, "Invalid reg_no/fullname format");
+          continue;
         }
 
         let student = await Student.findOne({ reg_no });
@@ -92,12 +132,12 @@ module.exports.register_students = async (req, res, next) => {
 
         // Ensure the course is registered only once
         const courseExists = semesterResult.courses.some(
-          (c) => c.course_code.toLowerCase() === course_code.toLowerCase()
+          (c) => normalizeCourseCode(c.course_code) === normalizedCourseCode
         );
 
         if (!courseExists) {
           semesterResult.courses.push({
-            course_code,
+            course_code: normalizedCourseCode,
             course_title,
             unit_load,
             corrected_unit_load: unit_load,
@@ -108,7 +148,12 @@ module.exports.register_students = async (req, res, next) => {
 
         // Track external courses for session
         if (external) {
-          externals.push({ course_code, course_title, unit_load, semester });
+          externals.push({
+            course_code: normalizedCourseCode,
+            course_title,
+            unit_load,
+            semester,
+          });
         }
 
         // Add student to class if not already present
@@ -116,8 +161,15 @@ module.exports.register_students = async (req, res, next) => {
           classData.students.push(student._id);
           studentIds.add(student._id.toString());
         }
+        summary.processed += 1;
       } catch (err) {
         console.error("Error processing student: ", err);
+        summary.skipped += 1;
+        pushSkip(
+          summary.skipped_details,
+          normalizeRegNo(Object.keys(studentObj || {})[0]),
+          "Unexpected error while processing row"
+        );
         continue;
       }
     }
@@ -156,6 +208,7 @@ module.exports.register_students = async (req, res, next) => {
       message: "Students registered successfully",
       class: classData,
       students: studentsData,
+      summary,
     });
   } catch (err) {
     console.error(err);
@@ -174,10 +227,30 @@ module.exports.register_external = async (req, res, next) => {
     session,
     external,
   } = req.body;
-  console.log(course_title, course_code, unit_load, semester, session);
 
   level = Number(level);
   semester = Number(semester);
+  const normalizedCourseCode = normalizeCourseCode(course_code);
+  const summary = {
+    total_rows: Array.isArray(students) ? students.length : 0,
+    processed: 0,
+    skipped: 0,
+    skipped_details: [],
+  };
+
+  if (!normalizedCourseCode || !session || !Number.isFinite(level) || !Number.isFinite(semester)) {
+    return res.status(400).json({
+      message: "course_code, session, level, and semester are required",
+      summary,
+    });
+  }
+
+  if (!Array.isArray(students) || students.length === 0) {
+    return res.status(400).json({
+      message: "students must be a non-empty array",
+      summary,
+    });
+  }
 
   try {
     const sessionData = await Session.findOne({ session }).populate("classes");
@@ -196,12 +269,21 @@ module.exports.register_external = async (req, res, next) => {
     const studentsData = [];
 
     for (const studentObj of students) {
-      const reg_no = Object.keys(studentObj)[0].trim();
-      if (!reg_no) continue;
+      const [rawRegNo] = Object.entries(studentObj || {})[0] || [];
+      const reg_no = normalizeRegNo(rawRegNo);
+      if (!reg_no) {
+        summary.skipped += 1;
+        pushSkip(summary.skipped_details, reg_no, "Missing reg_no");
+        continue;
+      }
 
       try {
         const student = await Student.findOne({ reg_no });
-        if (!student) continue;
+        if (!student) {
+          summary.skipped += 1;
+          pushSkip(summary.skipped_details, reg_no, "Student not found");
+          continue;
+        }
 
         let semesterResult = await SemesterResult.findOne({
           student_id: student._id,
@@ -220,12 +302,12 @@ module.exports.register_external = async (req, res, next) => {
         }
 
         const courseExists = semesterResult.courses.some(
-          (c) => c.course_code.toLowerCase() === course_code.toLowerCase()
+          (c) => normalizeCourseCode(c.course_code) === normalizedCourseCode
         );
 
         if (!courseExists) {
           semesterResult.courses.push({
-            course_code,
+            course_code: normalizedCourseCode,
             course_title,
             unit_load,
             corrected_unit_load: unit_load,
@@ -250,8 +332,11 @@ module.exports.register_external = async (req, res, next) => {
           session,
           courses: semesterResult.courses,
         });
+        summary.processed += 1;
       } catch (err) {
         console.error(`Error processing reg_no ${reg_no}:`, err);
+        summary.skipped += 1;
+        pushSkip(summary.skipped_details, reg_no, "Unexpected error while processing row");
         continue;
       }
     }
@@ -259,11 +344,14 @@ module.exports.register_external = async (req, res, next) => {
     await classData.save();
 
     if (external) {
-      const externalExists = await External.findOne({ session, course_code });
+      const externalExists = await External.findOne({
+        session,
+        course_code: normalizedCourseCode,
+      });
       if (!externalExists) {
         const newExternal = new External({
           session,
-          course_code,
+          course_code: normalizedCourseCode,
           course_title,
           unit_load,
           semester,
@@ -278,6 +366,7 @@ module.exports.register_external = async (req, res, next) => {
       message: "External students registered successfully",
       class: classData,
       students: studentsData,
+      summary,
     });
   } catch (err) {
     console.error(err);
@@ -286,26 +375,66 @@ module.exports.register_external = async (req, res, next) => {
 };
 
 module.exports.add_score = async (req, res, next) => {
-  let { students, session, semester, course_code, level } = req.body;
+  let { students, session, semester, course_code } = req.body;
   semester = Number(semester);
-  level = Number(level);
+  const normalizedCourseCode = normalizeCourseCode(course_code);
+  const summary = {
+    total_rows: Array.isArray(students) ? students.length : 0,
+    processed: 0,
+    skipped: 0,
+    skipped_details: [],
+  };
+
+  if (!normalizedCourseCode || !session || !Number.isFinite(semester)) {
+    return res.status(400).json({
+      message: "course_code, session, and semester are required",
+      summary,
+    });
+  }
+
+  if (!Array.isArray(students) || students.length === 0) {
+    return res.status(400).json({
+      message: "students must be a non-empty array",
+      summary,
+    });
+  }
 
   try {
-    const regNos = students.map((s) => s.reg_no); // Ensure consistency
+    const normalizedRows = students.map((studentData) => ({
+      reg_no: normalizeRegNo(studentData?.reg_no),
+      ca: Number(studentData?.ca),
+      exam: Number(studentData?.exam),
+    }));
+
+    const regNos = [
+      ...new Set(normalizedRows.map((row) => row.reg_no).filter(Boolean)),
+    ];
     const studentRecords = await Student.find({ reg_no: { $in: regNos } });
+    const studentRecordMap = new Map(
+      studentRecords.map((student) => [normalizeRegNo(student.reg_no), student])
+    );
 
     const bulkUpdates = [];
+    const changedStudentIds = new Set();
 
-    for (const studentData of students) {
+    for (const row of normalizedRows) {
       try {
-        let { reg_no, ca, exam } = studentData;
-        reg_no = reg_no.trim();
-        ca = Number(ca);
-        exam = Number(exam);
+        const { reg_no, ca, exam } = row;
+        if (!reg_no) {
+          summary.skipped += 1;
+          pushSkip(summary.skipped_details, reg_no, "Missing reg_no");
+          continue;
+        }
+        if (!Number.isFinite(ca) || !Number.isFinite(exam)) {
+          summary.skipped += 1;
+          pushSkip(summary.skipped_details, reg_no, "Invalid ca/exam score");
+          continue;
+        }
 
-        const student = studentRecords.find((s) => s.reg_no === reg_no);
+        const student = studentRecordMap.get(reg_no);
         if (!student) {
-          console.warn(`Skipping: Student ${reg_no} not found.`);
+          summary.skipped += 1;
+          pushSkip(summary.skipped_details, reg_no, "Student not found");
           continue;
         }
 
@@ -316,7 +445,8 @@ module.exports.add_score = async (req, res, next) => {
         });
 
         if (!semesterResult) {
-          console.warn(`Skipping: No semester record found for ${reg_no}.`);
+          summary.skipped += 1;
+          pushSkip(summary.skipped_details, reg_no, "No semester record found");
           continue;
         }
 
@@ -328,13 +458,12 @@ module.exports.add_score = async (req, res, next) => {
         if (!Array.isArray(sessionResult)) sessionResult = []; // Ensure it's iterable
 
         const course = semesterResult.courses.find(
-          (c) => c.course_code === course_code
+          (c) => normalizeCourseCode(c.course_code) === normalizedCourseCode
         );
 
         if (!course) {
-          console.warn(
-            `Skipping: Course ${course_code} not found for ${reg_no}.`
-          );
+          summary.skipped += 1;
+          pushSkip(summary.skipped_details, reg_no, "Course not registered for student");
           continue;
         }
 
@@ -342,24 +471,25 @@ module.exports.add_score = async (req, res, next) => {
         course.exam = exam;
         course.total = ca + exam;
 
-        if (["pct224", "pct422"].includes(course_code.toLowerCase())) {
+        if (["pct224", "pct422"].includes(normalizedCourseCode)) {
           course.grade = await calculateGrade(course.total, "ceutics");
-        } else if (course_code.toLowerCase() in professionals) {
+        } else if (normalizedCourseCode in professionals) {
           course.grade = await calculateGrade(course.total, "regular");
         } else {
           course.grade = await calculateGrade(course.total, "external");
         }
 
         semesterResult.gpa = Number(get_non_600_level_gpa(semesterResult));
-        student.cgpa = await get_cgpa(
-          student._id.toString(),
-          Number(student?.level ?? level)
-        );
 
         // Only calculate session_gpa if it's second semester AND sessionResult is available
         if (semester === 2 && sessionResult.length > 0) {
+          const normalizedSessionResults = sessionResult.map((result) =>
+            String(result._id) === String(semesterResult._id)
+              ? semesterResult
+              : result
+          );
           semesterResult.session_gpa = Number(
-            get_non_600_level_session_gpa(sessionResult)
+            get_non_600_level_session_gpa(normalizedSessionResults)
           );
         }
 
@@ -370,15 +500,17 @@ module.exports.add_score = async (req, res, next) => {
               $set: {
                 courses: semesterResult.courses,
                 gpa: semesterResult.gpa,
-                session_gpa: semesterResult.session_gpa || null, // Ensure it's set properly
+                session_gpa: semesterResult.session_gpa || null,
               },
             },
           },
         });
-
-        await student.save();
+        changedStudentIds.add(String(student._id));
+        summary.processed += 1;
       } catch (err) {
-        console.error(`Error processing student ${studentData.reg_no}:`, err);
+        console.error(`Error processing student ${row.reg_no}:`, err);
+        summary.skipped += 1;
+        pushSkip(summary.skipped_details, row.reg_no, "Unexpected error while processing row");
       }
     }
 
@@ -386,7 +518,35 @@ module.exports.add_score = async (req, res, next) => {
       await SemesterResult.bulkWrite(bulkUpdates);
     }
 
-    res.status(200).json({ message: "Scores added successfully" });
+    if (changedStudentIds.size > 0) {
+      const changedStudents = await Student.find({
+        _id: { $in: Array.from(changedStudentIds) },
+      }).select("level");
+
+      const studentUpdates = await Promise.all(
+        changedStudents.map(async (currentStudent) => {
+          const studentId = String(currentStudent._id);
+          const cgpa = Number(await get_cgpa(studentId, Number(currentStudent.level)));
+          return {
+            updateOne: {
+              filter: { _id: currentStudent._id },
+              update: { $set: { cgpa } },
+            },
+          };
+        })
+      );
+
+      if (studentUpdates.length > 0) {
+        await Student.bulkWrite(studentUpdates);
+      }
+    }
+
+    const message =
+      summary.skipped > 0
+        ? `Scores saved for ${summary.processed} student(s); ${summary.skipped} skipped.`
+        : "Scores added successfully";
+
+    res.status(200).json({ message, summary });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error adding scores" });

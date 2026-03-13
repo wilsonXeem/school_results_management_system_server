@@ -406,7 +406,7 @@ module.exports.removeStudent = async (req, res) => {
     if (!student) {
       return res.status(404).json({ message: "Student not found" });
     }
-    await SemesterResult.deleteMany({ reg_no });
+    await SemesterResult.deleteMany({ student_id: student._id });
     res.status(200).json({ message: "Student removed successfully" });
   } catch (err) {
     res.status(500).json({ message: "Error removing student" });
