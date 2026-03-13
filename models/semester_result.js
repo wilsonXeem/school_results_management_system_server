@@ -26,4 +26,9 @@ const semesterResultSchema = new Schema(
   { timestamps: true }
 );
 
+// Query hot paths used across results, transcript, outstanding list, and score upload.
+semesterResultSchema.index({ student_id: 1, session: 1, semester: 1 });
+semesterResultSchema.index({ session: 1, semester: 1, level: 1 });
+semesterResultSchema.index({ "courses.course_code": 1, session: 1, semester: 1 });
+
 module.exports = mongoose.model("SemesterResult", semesterResultSchema);

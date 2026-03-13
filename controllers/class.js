@@ -557,29 +557,45 @@ module.exports.get_class = async (req, res) => {
   const { class_id, semester, level, session } = req.body; // Expect class_id and semester
 
   try {
-    // Find the class by ID and populate students
-    const foundClass = await Class.findById(class_id).populate("students");
+    const normalizedSemester = Number(semester);
+    const normalizedLevel = Number(level);
+
+    const foundClass = await Class.findById(class_id).populate("students").lean();
 
     if (!foundClass) {
       return res.status(404).json({ message: "Class not found" });
     }
 
     // Get student IDs from the class
-    const studentIds = foundClass.students.map((student) => student._id);
+    const studentIds = (foundClass.students || []).map(
+      (student) => student?._id || student
+    );
 
-    // Find students with results for the given semester
-    const semesterResults = await SemesterResult.find({
-      student_id: { $in: studentIds },
-      session,
-      semester,
-      level,
-    }).populate("student_id"); // Populate student details
+    if (studentIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        class: foundClass,
+        students: [],
+      });
+    }
 
-    // Compute session GPA from current session records to avoid stale persisted values.
-    const allSessionResults = await SemesterResult.find({
-      student_id: { $in: studentIds },
-      session,
-    });
+    // Fetch only what we need and perform both reads in parallel.
+    const [semesterResults, allSessionResults] = await Promise.all([
+      SemesterResult.find({
+        student_id: { $in: studentIds },
+        session,
+        semester: normalizedSemester,
+        level: normalizedLevel,
+      })
+        .populate("student_id", "fullname reg_no level cgpa")
+        .lean(),
+      SemesterResult.find({
+        student_id: { $in: studentIds },
+        session,
+      })
+        .select("student_id courses")
+        .lean(),
+    ]);
 
     const sessionResultsByStudent = new Map();
     allSessionResults.forEach((result) => {
@@ -592,29 +608,31 @@ module.exports.get_class = async (req, res) => {
 
     // Extract students with their results
     const students = semesterResults.map((result) => {
-      const sessionResults =
-        sessionResultsByStudent.get(String(result.student_id?._id)) || [];
+      const studentDoc = result.student_id || {};
+      const studentKey = String(studentDoc._id || result.student_id);
+      const sessionResults = sessionResultsByStudent.get(studentKey) || [];
       const computedSessionGpa = Number(
         get_non_600_level_session_gpa(sessionResults)
       );
 
       return {
-        student_id: result.student_id._id,
-        fullname: result.student_id.fullname,
-        reg_no: result.student_id.reg_no,
-        level: result.student_id.level,
-        cgpa: result.student_id.cgpa,
+        student_id: studentDoc._id,
+        fullname: studentDoc.fullname,
+        reg_no: studentDoc.reg_no,
+        level: studentDoc.level,
+        cgpa: studentDoc.cgpa,
         gpa: result.gpa,
         session_gpa: Number.isFinite(computedSessionGpa)
           ? computedSessionGpa
           : result.session_gpa,
-        semester,
+        semester: result.semester,
         session: result.session,
         courses: result.courses, // Include their courses for the semester
       };
     });
 
     res.status(200).json({
+      success: true,
       class: foundClass,
       students,
     });
@@ -627,14 +645,22 @@ module.exports.get_class = async (req, res) => {
 module.exports.get_students_by_course = async (req, res) => {
   let { session, semester, course_code } = req.params;
   semester = Number(semester);
+  const normalizedCourseCode = normalizeCourseCode(course_code);
+  const escapedCourseCode = normalizedCourseCode.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
+  const courseCodeRegex = new RegExp(`^${escapedCourseCode}$`, "i");
 
   try {
     // Find all semester results that match the given session and semester
     const results = await SemesterResult.find({
       session,
       semester,
-      "courses.course_code": course_code,
-    }).populate("student_id");
+      "courses.course_code": courseCodeRegex,
+    })
+      .populate("student_id", "fullname reg_no")
+      .lean();
 
     if (!results.length) {
       return res.status(404).json({
@@ -644,9 +670,14 @@ module.exports.get_students_by_course = async (req, res) => {
     }
 
     // Extract student details along with their course information
-    const students = results.map((result) => {
+    const students = results
+      .map((result) => {
       const student = result.student_id;
-      const course = result.courses.find((c) => c.course_code === course_code);
+      const course = (result.courses || []).find(
+        (c) => normalizeCourseCode(c.course_code) === normalizedCourseCode
+      );
+
+      if (!student || !course) return null;
 
       return {
         student_id: student._id,
@@ -658,7 +689,15 @@ module.exports.get_students_by_course = async (req, res) => {
         grade: course.grade || 0,
         course_code: course.course_code,
       };
-    });
+      })
+      .filter(Boolean);
+
+    if (!students.length) {
+      return res.status(404).json({
+        message:
+          "No students found for this course in the given session and semester",
+      });
+    }
 
     res.status(200).json(students);
   } catch (err) {
@@ -747,7 +786,7 @@ module.exports.probation_list = async (req, res) => {
 };
 
 module.exports.error_students = async (req, res) => {
-  const { class_id, semester, level, session } = req.body;
+  const { class_id } = req.body;
 
   try {
     // Find the class by ID and populate students
@@ -763,14 +802,28 @@ module.exports.error_students = async (req, res) => {
     });
     sessions.sort(); // Ensure sessions are in order
 
+    const secondSemesterResults = await SemesterResult.find({
+      student_id: { $in: studentIds },
+      semester: 2, // Only check second semester
+      session: { $in: sessions },
+    })
+      .select("student_id session level session_gpa courses")
+      .sort("session")
+      .lean();
+
+    const resultsByStudent = new Map();
+    secondSemesterResults.forEach((result) => {
+      const key = String(result.student_id);
+      if (!resultsByStudent.has(key)) {
+        resultsByStudent.set(key, []);
+      }
+      resultsByStudent.get(key).push(result);
+    });
+
     const errorStudents = [];
 
     for (const student of foundClass.students) {
-      const studentResults = await SemesterResult.find({
-        student_id: student._id,
-        semester: 2, // Only check second semester
-        session: { $in: sessions },
-      }).sort("session");
+      const studentResults = resultsByStudent.get(String(student._id)) || [];
 
       let probationSessions = [];
       let probationDetails = [];
@@ -780,7 +833,9 @@ module.exports.error_students = async (req, res) => {
           const courseAverages = {};
 
           for (const course of result.courses) {
-            const prefix = course.course_code.match(/^[a-zA-Z]+/)[0];
+            const match = String(course.course_code || "").match(/^[a-zA-Z]+/);
+            if (!match) continue;
+            const prefix = match[0];
             if (!courseAverages[prefix]) {
               courseAverages[prefix] = [];
             }
@@ -828,7 +883,7 @@ module.exports.error_students = async (req, res) => {
       }
     }
 
-    res.status(200).json({ students: errorStudents });
+    res.status(200).json({ success: true, students: errorStudents });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error retrieving error students" });

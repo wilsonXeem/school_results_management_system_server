@@ -79,9 +79,16 @@ module.exports.get_results_by_session = async (req, res) => {
   const { student_id, session } = req.params;
 
   try {
-    const results = await SemesterResult.find({ student_id, session }).populate(
-      "student_id"
-    );
+    const [results, allResults] = await Promise.all([
+      SemesterResult.find({ student_id, session }).populate("student_id").lean(),
+      SemesterResult.find({ student_id })
+        .sort({
+          level: 1,
+          session: 1,
+          semester: 1,
+        })
+        .lean(),
+    ]);
 
     if (!results.length) {
       return res
@@ -117,11 +124,6 @@ module.exports.get_results_by_session = async (req, res) => {
     const sessionCgpa = Number(get_non_600_level_session_gpa(results));
 
     // Overall totals up to current level, using the same inclusion rule as GPA/CGPA for the level.
-    const allResults = await SemesterResult.find({ student_id }).sort({
-      level: 1,
-      session: 1,
-      semester: 1,
-    });
     let overallUnits = 0;
     let overallGp = 0;
     const is600ForOverall = Number(level) === 600;
@@ -137,6 +139,7 @@ module.exports.get_results_by_session = async (req, res) => {
       });
 
     res.status(200).json({
+      success: true,
       fullname: student.fullname,
       profile_image: student.profile_image,
       reg_no: student.reg_no,

@@ -12,6 +12,7 @@ const student_routes = require("./routes/student");
 
 dotenv.config();
 const app = express();
+const PORT = Number(process.env.PORT) || 1234;
 
 app.use(cors());
 app.use(compression());
@@ -50,7 +51,7 @@ mongoose
   .then(() => console.log("database connect successfully"))
   .catch((err) => console.log(err));
 
-const server = app.listen(1234, () => console.log("server started"));
+const server = app.listen(PORT, () => console.log(`server started on ${PORT}`));
 
 io = require("./utils/socket").init(server);
 io.on("connection", () => console.log("socket connected"));

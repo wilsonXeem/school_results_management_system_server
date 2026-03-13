@@ -5,7 +5,10 @@ const error = require("../utils/error_handler");
 
 module.exports.get_sessions = async (req, res, next) => {
   try {
-    const sessions = await Session.find().populate("classes").populate("externals")
+    const sessions = await Session.find()
+      .populate("classes")
+      .populate("externals")
+      .lean();
 
     res.status(200).json({
       success: true,
@@ -21,7 +24,9 @@ module.exports.get_session = async (req, res) => {
   const { session } = req.params; // Session name passed as URL param
 
   try {
-    const foundSession = await Session.findOne({ session }).populate("classes");
+    const foundSession = await Session.findOne({ session })
+      .populate("classes")
+      .lean();
 
     if (!foundSession) {
       return res.status(404).json({ message: "Session not found" });
