@@ -19,6 +19,11 @@ const isCourseIncludedFor600 = (courseCode = "") => {
   return inProfessional || inExternal;
 };
 
+const isProfessionalCourse = (courseCode = "") => {
+  const code = String(courseCode).toLowerCase().trim();
+  return Object.prototype.hasOwnProperty.call(professionals, code);
+};
+
 const getOverallTotals = (courses = [], is600Level = false) => {
   let units = 0;
   let gp = 0;
@@ -35,6 +40,59 @@ const getOverallTotals = (courses = [], is600Level = false) => {
   });
 
   return { units, gp };
+};
+
+const getSemesterMetrics = (courses = []) => {
+  const { units, gp } = getOverallTotals(courses, false);
+  const semesterGpa = units > 0 ? Number((gp / units).toFixed(2)) : 0;
+
+  return {
+    total_units: units,
+    total_gp: gp,
+    semester_gpa: semesterGpa,
+  };
+};
+
+const parseSessionStartYear = (value) => {
+  const match = String(value ?? "").match(/(\d{4})/);
+  const year = Number(match?.[1]);
+  return Number.isFinite(year) ? year : NaN;
+};
+
+const compareAcademicSession = (a, b) => {
+  const aYear = parseSessionStartYear(a);
+  const bYear = parseSessionStartYear(b);
+
+  if (Number.isFinite(aYear) && Number.isFinite(bYear) && aYear !== bYear) {
+    return aYear - bYear;
+  }
+
+  return String(a ?? "").localeCompare(String(b ?? ""), "en", {
+    numeric: true,
+    sensitivity: "base",
+  });
+};
+
+const isResultAtOrBeforeTarget = (
+  result,
+  { targetSession, targetLevel, targetSemester }
+) => {
+  const sessionCmp = compareAcademicSession(result?.session, targetSession);
+  if (sessionCmp < 0) return true;
+  if (sessionCmp > 0) return false;
+
+  const resultLevel = Number(result?.level);
+  if (Number.isFinite(resultLevel)) {
+    if (resultLevel < targetLevel) return true;
+    if (resultLevel > targetLevel) return false;
+  }
+
+  const resultSemester = Number(result?.semester);
+  if (Number.isFinite(resultSemester)) {
+    return resultSemester <= targetSemester;
+  }
+
+  return true;
 };
 
 module.exports.get_student = async (req, res) => {
@@ -58,17 +116,38 @@ module.exports.get_results_by_semester = async (req, res) => {
   const { student_id } = req.params;
 
   try {
-    const results = await SemesterResult.find({
-      student_id,
-    }).populate("student_id");
+    const results = await SemesterResult.find({ student_id })
+      .populate("student_id")
+      .lean();
 
-    if (!results) {
+    if (!results.length) {
       return res
         .status(404)
         .json({ message: "No results found for this semester" });
     }
 
-    res.status(200).json(results);
+    const sortedResults = [...results].sort((a, b) => {
+      const levelDiff = Number(a?.level) - Number(b?.level);
+      if (Number.isFinite(levelDiff) && levelDiff !== 0) return levelDiff;
+
+      const sessionDiff = compareAcademicSession(a?.session, b?.session);
+      if (sessionDiff !== 0) return sessionDiff;
+
+      return Number(a?.semester) - Number(b?.semester);
+    });
+
+    const normalizedResults = sortedResults.map((result) => {
+      const metrics = getSemesterMetrics(result?.courses || []);
+      return {
+        ...result,
+        gpa: metrics.semester_gpa,
+        semester_gpa: metrics.semester_gpa,
+        total_units: metrics.total_units,
+        total_gp: metrics.total_gp,
+      };
+    });
+
+    res.status(200).json(normalizedResults);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Error fetching semester results" });
@@ -104,39 +183,45 @@ module.exports.get_results_by_session = async (req, res) => {
     const firstSemester =
       results
         .find((r) => r.semester === 1)
-        ?.courses.filter((course) => course.course_code in professionals) || [];
+        ?.courses.filter((course) => isProfessionalCourse(course.course_code)) || [];
     const secondSemester =
       results
         .find((r) => r.semester === 2)
-        ?.courses.filter((course) => course.course_code in professionals) || [];
+        ?.courses.filter((course) => isProfessionalCourse(course.course_code)) || [];
     const firstExternal =
       results
         .find((r) => r.semester === 1)
-        ?.courses.filter((course) => !(course.course_code in professionals)) ||
+        ?.courses.filter((course) => !isProfessionalCourse(course.course_code)) ||
       [];
     const secondExternal =
       results
         .find((r) => r.semester === 2)
-        ?.courses.filter((course) => !(course.course_code in professionals)) ||
+        ?.courses.filter((course) => !isProfessionalCourse(course.course_code)) ||
       [];
 
     // Keep session GPA consistent with results page logic (all registered courses).
     const sessionCgpa = Number(get_non_600_level_session_gpa(results));
 
-    // Overall totals up to current level, using the same inclusion rule as GPA/CGPA for the level.
+    // Overall totals up to the requested session/level context.
     let overallUnits = 0;
     let overallGp = 0;
-    const is600ForOverall = Number(level) === 600;
+    const normalizedLevel = Number(level);
+    const is600ForOverall = normalizedLevel === 600;
     allResults
-      .filter((result) => Number(result.level) <= Number(level))
+      .filter((result) =>
+        isResultAtOrBeforeTarget(result, {
+          targetSession: session,
+          targetLevel: normalizedLevel,
+          targetSemester: 2,
+        })
+      )
       .forEach((result) => {
-        const { units, gp } = getOverallTotals(
-          result?.courses || [],
-          is600ForOverall
-        );
+        const { units, gp } = getOverallTotals(result?.courses || [], is600ForOverall);
         overallUnits += units;
         overallGp += gp;
       });
+    const computedOverallCgpa =
+      overallUnits > 0 ? Number((overallGp / overallUnits).toFixed(2)) : 0;
 
     res.status(200).json({
       success: true,
@@ -151,7 +236,7 @@ module.exports.get_results_by_session = async (req, res) => {
       first_external: firstExternal,
       second_external: secondExternal,
       session_cgpa: Number(sessionCgpa),
-      cgpa: student.cgpa,
+      cgpa: computedOverallCgpa,
       overall_units: overallUnits,
       overall_gp: overallGp,
     });

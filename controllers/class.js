@@ -21,9 +21,91 @@ const normalizeName = (value) =>
     .replace(/\s+/g, " ")
     .trim();
 
+const parseSessionStartYear = (value) => {
+  const match = String(value ?? "").match(/(\d{4})/);
+  const year = Number(match?.[1]);
+  return Number.isFinite(year) ? year : NaN;
+};
+
+const compareAcademicSession = (a, b) => {
+  const aYear = parseSessionStartYear(a);
+  const bYear = parseSessionStartYear(b);
+
+  if (Number.isFinite(aYear) && Number.isFinite(bYear) && aYear !== bYear) {
+    return aYear - bYear;
+  }
+
+  return String(a ?? "").localeCompare(String(b ?? ""), "en", {
+    numeric: true,
+    sensitivity: "base",
+  });
+};
+
+const isResultAtOrBeforeTarget = (
+  result,
+  { targetSession, targetLevel, targetSemester }
+) => {
+  const sessionCmp = compareAcademicSession(result?.session, targetSession);
+  if (sessionCmp < 0) return true;
+  if (sessionCmp > 0) return false;
+
+  const resultLevel = Number(result?.level);
+  if (Number.isFinite(resultLevel)) {
+    if (resultLevel < targetLevel) return true;
+    if (resultLevel > targetLevel) return false;
+  }
+
+  const resultSemester = Number(result?.semester);
+  if (Number.isFinite(resultSemester)) {
+    return resultSemester <= targetSemester;
+  }
+
+  return true;
+};
+
 const pushSkip = (skipped, reg_no, reason) => {
   if (skipped.length >= 200) return;
   skipped.push({ reg_no, reason });
+};
+
+const getSafeCourseTotals = (courses = [], approvedOnly = false) => {
+  let totalPoints = 0;
+  let totalUnits = 0;
+
+  let sourceCourses = Array.isArray(courses) ? courses : [];
+  if (approvedOnly) {
+    sourceCourses = filterApprovedCourses(sourceCourses);
+  }
+
+  sourceCourses.forEach((course) => {
+    const grade = Number(course?.grade);
+    const unitLoad = Number(course?.unit_load);
+    if (!Number.isFinite(unitLoad) || unitLoad <= 0) return;
+
+    const safeGrade = Number.isFinite(grade) ? grade : 0;
+    totalPoints += safeGrade * unitLoad;
+    totalUnits += unitLoad;
+  });
+
+  return { totalPoints, totalUnits };
+};
+
+const formatDynamicGpa = (totalPoints, totalUnits) => {
+  return totalUnits > 0 ? Number((totalPoints / totalUnits).toFixed(2)) : 0;
+};
+
+const computeDynamicCgpa = (semesterResults = [], level) => {
+  const is600Level = Number(level) === 600;
+  let totalPoints = 0;
+  let totalUnits = 0;
+
+  (Array.isArray(semesterResults) ? semesterResults : []).forEach((result) => {
+    const totals = getSafeCourseTotals(result?.courses || [], is600Level);
+    totalPoints += totals.totalPoints;
+    totalUnits += totals.totalUnits;
+  });
+
+  return formatDynamicGpa(totalPoints, totalUnits);
 };
 
 module.exports.register_students = async (req, res, next) => {
@@ -46,6 +128,7 @@ module.exports.register_students = async (req, res, next) => {
     processed: 0,
     skipped: 0,
     skipped_details: [],
+    warnings: [],
   };
 
   if (!normalizedCourseCode || !session || !Number.isFinite(level) || !Number.isFinite(semester)) {
@@ -192,7 +275,15 @@ module.exports.register_students = async (req, res, next) => {
       semester, // Ensure only one semester per student
     }).populate("student_id"); // Populate student details
 
-    const studentsData = studentResults.map((result) => ({
+    const validStudentResults = studentResults.filter((result) => result?.student_id);
+    if (validStudentResults.length !== studentResults.length) {
+      const orphanedCount = studentResults.length - validStudentResults.length;
+      const warningMessage = `Skipped ${orphanedCount} semester result row(s) with missing student references.`;
+      summary.warnings.push(warningMessage);
+      console.warn(`[register_students] ${warningMessage}`);
+    }
+
+    const studentsData = validStudentResults.map((result) => ({
       student_id: result.student_id._id,
       fullname: result.student_id.fullname,
       reg_no: result.student_id.reg_no,
@@ -559,6 +650,16 @@ module.exports.get_class = async (req, res) => {
   try {
     const normalizedSemester = Number(semester);
     const normalizedLevel = Number(level);
+    if (
+      !class_id ||
+      !session ||
+      !Number.isFinite(normalizedSemester) ||
+      !Number.isFinite(normalizedLevel)
+    ) {
+      return res.status(400).json({
+        message: "class_id, session, semester, and level are required",
+      });
+    }
 
     const foundClass = await Class.findById(class_id).populate("students").lean();
 
@@ -580,7 +681,7 @@ module.exports.get_class = async (req, res) => {
     }
 
     // Fetch only what we need and perform both reads in parallel.
-    const [semesterResults, allSessionResults] = await Promise.all([
+    const [semesterResults, allSessionResults, allStudentResults] = await Promise.all([
       SemesterResult.find({
         student_id: { $in: studentIds },
         session,
@@ -593,7 +694,12 @@ module.exports.get_class = async (req, res) => {
         student_id: { $in: studentIds },
         session,
       })
-        .select("student_id courses")
+        .select("student_id courses semester")
+        .lean(),
+      SemesterResult.find({
+        student_id: { $in: studentIds },
+      })
+        .select("student_id courses session semester level")
         .lean(),
     ]);
 
@@ -606,13 +712,42 @@ module.exports.get_class = async (req, res) => {
       sessionResultsByStudent.get(key).push(result);
     });
 
+    const allResultsByStudent = new Map();
+    allStudentResults.forEach((result) => {
+      const key = String(result.student_id);
+      if (!allResultsByStudent.has(key)) {
+        allResultsByStudent.set(key, []);
+      }
+      allResultsByStudent.get(key).push(result);
+    });
+
     // Extract students with their results
     const students = semesterResults.map((result) => {
       const studentDoc = result.student_id || {};
       const studentKey = String(studentDoc._id || result.student_id);
       const sessionResults = sessionResultsByStudent.get(studentKey) || [];
+      const boundedSessionResults = sessionResults.filter((entry) => {
+        const resultSemester = Number(entry?.semester);
+        if (!Number.isFinite(resultSemester)) return true;
+        return resultSemester <= normalizedSemester;
+      });
+      const studentResults = allResultsByStudent.get(studentKey) || [];
+      const boundedStudentResults = studentResults.filter((entry) =>
+        isResultAtOrBeforeTarget(entry, {
+          targetSession: session,
+          targetLevel: normalizedLevel,
+          targetSemester: normalizedSemester,
+        })
+      );
+      const computedGpa = Number(
+        get_non_600_level_gpa({ courses: result.courses || [] })
+      );
       const computedSessionGpa = Number(
-        get_non_600_level_session_gpa(sessionResults)
+        get_non_600_level_session_gpa(boundedSessionResults)
+      );
+      const computedCgpa = computeDynamicCgpa(
+        boundedStudentResults,
+        normalizedLevel
       );
 
       return {
@@ -620,8 +755,8 @@ module.exports.get_class = async (req, res) => {
         fullname: studentDoc.fullname,
         reg_no: studentDoc.reg_no,
         level: studentDoc.level,
-        cgpa: studentDoc.cgpa,
-        gpa: result.gpa,
+        cgpa: Number.isFinite(computedCgpa) ? computedCgpa : studentDoc.cgpa,
+        gpa: Number.isFinite(computedGpa) ? computedGpa : result.gpa,
         session_gpa: Number.isFinite(computedSessionGpa)
           ? computedSessionGpa
           : result.session_gpa,
